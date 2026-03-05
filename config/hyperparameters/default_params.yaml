@@ -1,0 +1,48 @@
+# Default hyperparameters for all models
+hyperparameters:
+  # Training hyperparameters
+  training:
+    batch_size: 32
+    learning_rate: 0.001
+    epochs: 50
+    optimizer: "SGD"
+    momentum: 0.9
+    weight_decay: 1e-6
+    
+  # Learning rate scheduler
+  scheduler:
+    patience: 5
+    factor: 0.1
+    min_lr: 1e-6
+    
+  # Early stopping
+  early_stopping:
+    patience: 20
+    min_delta: 0.0
+    
+  # Data processing
+  data_processing:
+    num_workers: 8
+    shuffle: true
+    validation_split: 0.2
+    
+  # Model specific defaults
+  classical:
+    dropout_rate: 0.2
+    batch_norm_momentum: 0.1
+    
+  quantum:
+    quantum_iterations_per_step: 1
+    encoding_scaling: 1.0
+    shots: null
+    
+  # Augmentation
+  augmentation:
+    horizontal_flip_prob: 0.5
+    vertical_flip_prob: 0.5
+    rotation_degrees: 15
+    
+  # Regularization
+  regularization:
+    l1_penalty: 0.0
+    l2_penalty: 1e-6

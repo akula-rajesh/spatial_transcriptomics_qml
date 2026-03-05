@@ -1,0 +1,53 @@
+# Classical EfficientNet model configuration
+model:
+  name: "classical_efficientnet"
+  type: "classical"
+  description: "EfficientNet-B4 based spatial transcriptomics predictor"
+  
+# Model architecture parameters
+architecture:
+  backbone: "efficientnet_b4"
+  pretrained: true
+  finetuning_strategy: "ftconv"  # Options: none, ftfc, ftconv, ftall
+  use_auxiliary_head: true
+  auxiliary_ratio: 1.0
+  auxiliary_weight: 1.0
+  dropout_rate: 0.2
+
+# Input/output specifications
+input:
+  channels: 3
+  height: 224
+  width: 224
+
+output:
+  main_genes: 250
+  auxiliary_genes: 250  # Only used if use_auxiliary_head is true
+
+# Training parameters specific to this model
+training:
+  optimizer: "SGD"
+  optimizer_params:
+    momentum: 0.9
+    weight_decay: 1e-6
+  scheduler: "CosineAnnealingLR"
+  scheduler_params:
+    T_max: 5
+  loss_function: "MSELoss"
+
+# Data augmentation
+augmentation:
+  horizontal_flip: true
+  vertical_flip: true
+  rotation_90: true
+  normalize_input: true
+
+# Feature extraction
+feature_extraction:
+  fixed_extractor: false
+  feature_layer: "avg_pool"  # Options: avg_pool, flatten, custom
+
+# Model saving
+checkpoint:
+  save_frequency: "epoch"  # Options: epoch, best, never
+  save_optimizer_state: true

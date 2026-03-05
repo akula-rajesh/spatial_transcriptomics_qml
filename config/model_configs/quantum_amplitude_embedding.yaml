@@ -1,0 +1,77 @@
+# Quantum Amplitude Embedding model configuration
+model:
+  name: "quantum_amplitude_embedding"
+  type: "quantum"
+  description: "Quantum Machine Learning model using amplitude embedding for gene expression prediction"
+  
+# Quantum circuit parameters
+quantum:
+  num_qubits: 8
+  num_layers: 3
+  embedding_method: "amplitude_encoding"  # Options: amplitude_encoding, angle_encoding
+  ansatz: "strongly_entangling"  # Options: strongly_entangling, basic_entangling
+  diff_method: "adjoint"  # Options: adjoint, parameter_shift, finite_diff
+  dev_type: "default.qubit"  # Options: default.qubit, lightning.qubit
+  
+# Circuit architecture
+circuit:
+  encoding_gates: ["RY"]  # Rotation gates for encoding
+  entangling_gates: ["CNOT"]  # Entangling gates
+  layer_structure: "alternating"  # Options: alternating, sequential
+  entangling_strategy: "linear"  # Options: linear, ring, all_to_all
+
+# Model architecture
+architecture:
+  classical_preprocessor: "efficientnet_b4"  # Classical backbone for feature extraction
+  classical_pretrained: true
+  preprocessing_features: 1792  # Output features from classical backbone
+  quantum_feature_dimension: 256  # Dimension after quantum processing
+  use_auxiliary_head: false  # Auxiliary head for quantum models (optional)
+  auxiliary_ratio: 0.0
+  auxiliary_weight: 0.0
+  dropout_rate: 0.1
+
+# Input/output specifications
+input:
+  channels: 3
+  height: 224
+  width: 224
+  max_encoded_features: 256  # Max features that can be encoded in quantum state
+
+output:
+  main_genes: 250
+  auxiliary_genes: 0  # Not typically used with QML
+
+# Training parameters specific to quantum model
+training:
+  optimizer: "Adam"
+  optimizer_params:
+    betas: [0.9, 0.999]
+    eps: 1e-8
+    weight_decay: 0.0
+  scheduler: "ReduceLROnPlateau"
+  scheduler_params:
+    mode: "min"
+    patience: 3
+    factor: 0.5
+    min_lr: 1e-7
+  loss_function: "MSELoss"
+  quantum_iterations_per_step: 1  # Number of quantum circuit evaluations per training step
+
+# Data preprocessing for quantum
+quantum_preprocessing:
+  normalization_method: "minmax"  # Options: minmax, zscore, unit_vector
+  encoding_scaling: 1.0  # Scaling factor for input encoding
+  feature_selection: "top_variance"  # Options: top_variance, pca, autoencoder
+
+# Quantum device settings
+device:
+  shots: null  # Number of circuit executions (null for exact)
+  analytic: true  # Use analytic gradients
+  parallel_devices: 1  # Number of parallel devices for batch processing
+
+# Model saving
+checkpoint:
+  save_frequency: "epoch"  # Options: epoch, best, never
+  save_quantum_state: false  # Whether to save quantum states (large files)
+  save_optimizer_state: true

@@ -1,0 +1,69 @@
+# Main pipeline configuration
+pipeline:
+  download_data: true
+  process_data: true
+  train_model: true
+  evaluate_model: true
+  compare_results: true
+  
+# Data paths (can be absolute or relative)
+data:
+  mendeley_url: "https://data.mendeley.com/public-api/zip/29ntw7sh4r/download/5"
+  input_dir: "data/input/"
+  processed_dir: "data/processed/"
+  train_dir: "data/train/"
+  test_dir: "data/test/"
+  metadata_file: "metadata.csv"
+
+# Results storage
+results:
+  base_dir: "results/"
+  experiment_naming: "timestamp"  # Options: timestamp, custom
+  save_model_checkpoints: true
+  save_predictions: true
+  save_logs: true
+
+# Training configuration
+training:
+  batch_size: 32
+  epochs: 50
+  learning_rate: 0.001
+  early_stopping_patience: 20
+  validation_patience: 5
+  cross_validation_folds: 5
+  validation_metric: "loss"  # Options: loss, aMAE, aRMSE, aCC
+  num_workers: 8
+  shuffle: true
+  debug: false
+
+# Model selection
+models:
+  active_model: "classical_efficientnet"  # Default model to run
+  compare_models: 
+    - "classical_efficientnet"
+    - "quantum_amplitude_embedding"
+  save_best_only: true
+
+# Data splitting
+split:
+  test_patients: 
+    - "BC23450"
+    - "BC23903"
+  validation_ratio: 0.2
+
+# Gene expression filtering
+gene_expression:
+  min_total_reads: 1000
+  min_expression_percent: 0.10  # Expressed in at least 10% of spots
+  top_genes_to_predict: 250
+
+# Spatial processing
+spatial:
+  patch_window_size: 224
+  patch_resolution: 224
+
+# Execution control
+execution:
+  seed: 0
+  cuda_enabled: true
+  max_image_pixels: 1000000000

@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  spatial-pipeline-cpu:
+    build: .
+    container_name: spatial-transcriptomics-pipeline-cpu
+    volumes:
+      - ./data:/app/data
+      - ./results:/app/results
+      - ./configs:/app/configs
+      - ./logs:/app/logs
+    environment:
+      - CUDA_VISIBLE_DEVICES=""
+    command: ["--help"]
+    working_dir: /app
+
+  spatial-pipeline-gpu:
+    build: .
+    container_name: spatial-transcriptomics-pipeline-gpu
+    volumes:
+      - ./data:/app/data
+      - ./results:/app/results
+      - ./configs:/app/configs
+      - ./logs:/app/logs
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+    command: ["--help"]
+    working_dir: /app
+
+  jupyter:
+    build: .
+    container_name: spatial-transcriptomics-jupyter
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./data:/app/data
+      - ./results:/app/results
+      - ./configs:/app/configs
+      - ./logs:/app/logs
+      - ./notebooks:/app/notebooks
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - JUPYTER_ENABLE_LAB=yes
+    command: ["jupyter", "lab", "--ip=0.0.0.0", "--allow-root", "--no-browser"]
+    working_dir: /app

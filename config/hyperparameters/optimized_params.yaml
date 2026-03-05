@@ -1,0 +1,48 @@
+# Optimized hyperparameters (based on common practices)
+hyperparameters:
+  # Optimized for spatial transcriptomics
+  training:
+    batch_size: 16  # Smaller batches for better gradient estimates
+    learning_rate: 0.0005  # Lower LR for stability
+    epochs: 100  # More epochs for convergence
+    optimizer: "Adam"
+    momentum: 0.9
+    weight_decay: 1e-4  # Stronger regularization
+    
+  # Scheduler with slower decay
+  scheduler:
+    patience: 10
+    factor: 0.5
+    min_lr: 1e-7
+    
+  # Early stopping with more patience
+  early_stopping:
+    patience: 30
+    min_delta: 0.001
+    
+  # Data processing for better generalization
+  data_processing:
+    num_workers: 4  # Reduced to avoid memory issues
+    shuffle: true
+    validation_split: 0.15
+    
+  # Model specific optimizations
+  classical:
+    dropout_rate: 0.3  # Increased dropout for regularization
+    batch_norm_momentum: 0.05
+    
+  quantum:
+    quantum_iterations_per_step: 2  # Multiple iterations for better optimization
+    encoding_scaling: 0.8  # Scaled down to prevent overflow
+    shots: 1000  # Finite shots for realistic simulation
+    
+  # Augmentation for spatial data
+  augmentation:
+    horizontal_flip_prob: 0.7
+    vertical_flip_prob: 0.7
+    rotation_degrees: 30
+    
+  # Regularization for biological data
+  regularization:
+    l1_penalty: 1e-5
+    l2_penalty: 1e-4
