@@ -71,9 +71,9 @@ The system is designed to be modular, extensible, and production-ready, supporti
 
 ```text
 spatial-transcriptomics-pipeline/
-â”œâ”€â”€ configs/                 # Configuration files
-â”œâ”€â”€ data/                    # Data storage (not included in repo)
-â”œâ”€â”€ logs/                    # Log files
+  configs/                 # Configuration files
+  data/                    # Data storage (not included in repo)
+  logs/                    # Log files
 â”œâ”€â”€ results/                 # Experiment results
 â”œâ”€â”€ src/                     # Source code
 â”‚   â”œâ”€â”€ core/               # Core utilities and registry
@@ -495,19 +495,9 @@ mypy src/
 
 ## License
 
-This project is licensed under the MIT License - see the `LICENSE` file for details.
+
 
 ## Citation
 
-If you use this pipeline in your research, please cite our work:
 
-```bibtex
-@article{spatial_transcriptomics_pipeline2023,
-  title={A Flexible Machine Learning Pipeline for Spatial Transcriptomics Analysis},
-  author={Research Team, Spatial Transcriptomics},
-  journal={Bioinformatics},
-  year={2023},
-  doi={XXXX/XXXX.XXXX}
-}
-```
 
