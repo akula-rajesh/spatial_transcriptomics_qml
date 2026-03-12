@@ -1,0 +1,14 @@
+{
+  "quantum_amplitude_embedding_best_val_loss": [
+    {
+      "value": 0.08385589271783829,
+      "timestamp": "2026-03-12T18:23:53.951845"
+    }
+  ],
+  "quantum_amplitude_embedding_training_time": [
+    {
+      "value": 4117.702104091644,
+      "timestamp": "2026-03-12T18:23:53.951869"
+    }
+  ]
+}

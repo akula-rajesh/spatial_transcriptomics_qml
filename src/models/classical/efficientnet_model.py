@@ -3,9 +3,19 @@ Classical EfficientNet model for spatial transcriptomics prediction.
 """
 
 import logging
+import ssl
 from typing import Dict, Any, Optional, Tuple
 import torch
 import torch.nn as nn
+
+# Configure SSL for model downloads
+try:
+    import certifi
+    ssl._create_default_https_context = ssl._create_unverified_context
+except ImportError:
+    # If certifi is not available, use unverified context
+    ssl._create_default_https_context = ssl._create_unverified_context
+
 try:
     import torchvision.models as models
     TORCHVISION_AVAILABLE = True

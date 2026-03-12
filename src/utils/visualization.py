@@ -8,7 +8,6 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from scipy.spatial.distance import pdist, squareform
 import torch
 
 # Configure plotting style

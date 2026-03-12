@@ -14,6 +14,13 @@ from .result_tracker import (
     log_metrics
 )
 
+from .directory_utils import (
+    ensure_directories_exist,
+    ensure_project_structure,
+    ensure_file_parent_exists,
+    safe_open
+)
+
 # Additional utility modules (would be implemented separately)
 # from .data_utils import *
 # from .visualization import *
@@ -31,7 +38,11 @@ __all__ = [
     'initialize_tracker',
     'get_tracker',
     'log_metric',
-    'log_metrics'
+    'log_metrics',
+    'ensure_directories_exist',
+    'ensure_project_structure',
+    'ensure_file_parent_exists',
+    'safe_open'
 ]
 
 # Initialize package-level logging

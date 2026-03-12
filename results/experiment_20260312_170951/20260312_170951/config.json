@@ -1,0 +1,111 @@
+{
+  "pipeline": {
+    "download_data": false,
+    "data_loader": "spatial_downloader",
+    "process_data": false,
+    "processing_steps": [
+      {
+        "name": "spatial_file_organizer",
+        "enabled": true
+      },
+      {
+        "name": "spatial_gene_processor",
+        "enabled": true
+      },
+      {
+        "name": "spatial_stain_normalizer",
+        "enabled": true
+      },
+      {
+        "name": "spatial_patch_extractor",
+        "enabled": true
+      }
+    ],
+    "train_model": true,
+    "evaluate_model": false,
+    "compare_results": false
+  },
+  "download": {
+    "url": "https://data.mendeley.com/public-api/zip/29ntw7sh4r/download/5",
+    "remove_zip": true,
+    "chunk_size": 1024,
+    "max_retries": 3,
+    "timeout": 300
+  },
+  "data": {
+    "input_dir": "data/input/",
+    "processed_dir": "data/processed/",
+    "train_dir": "data/train/",
+    "test_dir": "data/test/",
+    "metadata_file": "metadata.csv",
+    "verify_ssl": false,
+    "stbc_dir": "data/stbc/",
+    "raw_dir": "data/raw/",
+    "organized_dir": "data/organized/",
+    "count_filtered_dir": "data/processed/count_filtered/",
+    "stained_dir": "data/stained/",
+    "train_counts_dir": "data/train/counts/",
+    "train_images_dir": "data/train/images/",
+    "test_counts_dir": "data/test/counts/",
+    "test_images_dir": "data/test/images/",
+    "test_patient": "BC23450"
+  },
+  "results": {
+    "base_dir": "results/",
+    "experiment_naming": "timestamp",
+    "save_model_checkpoints": true,
+    "save_predictions": true,
+    "save_logs": true
+  },
+  "training": {
+    "batch_size": 32,
+    "epochs": 30,
+    "learning_rate": 0.001,
+    "early_stopping_patience": 20,
+    "validation_patience": 5,
+    "validation_metric": "loss",
+    "num_workers": 8,
+    "shuffle": true,
+    "debug": false
+  },
+  "cross_validation": {
+    "folds": 5,
+    "type": "kfold",
+    "shuffle": true,
+    "random_state": 42
+  },
+  "models": {
+    "active_model": "quantum_amplitude_embedding",
+    "compare_models": [
+      "classical_efficientnet",
+      "quantum_amplitude_embedding"
+    ],
+    "save_best_only": true
+  },
+  "split": {
+    "test_patients": [
+      "BC23450",
+      "BC23903"
+    ],
+    "validation_ratio": 0.2
+  },
+  "gene_expression": {
+    "min_total_reads": 1000,
+    "min_expression_percent": 0.1,
+    "top_genes_to_predict": 250
+  },
+  "preprocessing": {
+    "window_size": 224
+  },
+  "spatial": {
+    "patch_window_size": 224,
+    "patch_resolution": 224
+  },
+  "execution": {
+    "seed": 0,
+    "gpu_enabled": true,
+    "cuda_enabled": true,
+    "mps_enabled": true,
+    "max_image_pixels": 1000000000
+  }
+}

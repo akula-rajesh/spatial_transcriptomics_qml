@@ -1,0 +1,20 @@
+{
+  "quantum_amplitude_embedding_eval_mae": [
+    {
+      "value": 0.5017982316017151,
+      "timestamp": "2026-03-12T18:33:53.544090"
+    }
+  ],
+  "quantum_amplitude_embedding_eval_rmse": [
+    {
+      "value": 0.5802922177314759,
+      "timestamp": "2026-03-12T18:33:53.544100"
+    }
+  ],
+  "quantum_amplitude_embedding_eval_correlation_coefficient": [
+    {
+      "value": -0.00038420844823122024,
+      "timestamp": "2026-03-12T18:33:53.544102"
+    }
+  ]
+}

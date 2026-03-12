@@ -34,10 +34,15 @@ class BaseTrainer(ABC):
         self.weight_decay = self.get_config_value('training.weight_decay', 1e-5)
         self.gradient_clip = self.get_config_value('training.gradient_clip', 1.0)
         
-        # Device configuration
-        self.device = torch.device('cuda' if torch.cuda.is_available() and 
-                                  self.get_config_value('execution.cuda_enabled', True) else 'cpu')
-        
+        # Additional training parameters
+        self.num_workers = self.get_config_value('training.num_workers', 4)
+        self.shuffle = self.get_config_value('training.shuffle', True)
+        self.validation_patience = self.get_config_value('training.validation_patience', 5)
+        self.debug_mode = self.get_config_value('training.debug', False)
+
+        # Device configuration with Mac GPU (MPS), CUDA, and CPU support
+        self.device = self._get_device()
+
         # Results directory
         self.results_dir = Path(self.get_config_value('results.base_dir', 'results/'))
         self.checkpoint_dir = self.results_dir / "checkpoints"
@@ -89,6 +94,38 @@ class BaseTrainer(ABC):
         except (KeyError, TypeError):
             return default
             
+    def _get_device(self) -> torch.device:
+        """
+        Get the appropriate device (MPS for Mac GPU, CUDA for NVIDIA GPU, or CPU).
+
+        Returns:
+            torch.device: The selected device
+        """
+        # Check if GPU acceleration is enabled in config
+        gpu_enabled = self.get_config_value('execution.gpu_enabled', True)
+        cuda_enabled = self.get_config_value('execution.cuda_enabled', True)
+        mps_enabled = self.get_config_value('execution.mps_enabled', True)
+
+        if not gpu_enabled:
+            self.log_info("GPU acceleration disabled in config, using CPU")
+            return torch.device('cpu')
+
+        # Prefer CUDA if available and enabled
+        if torch.cuda.is_available() and cuda_enabled:
+            device = torch.device('cuda')
+            self.log_info(f"Using CUDA GPU: {torch.cuda.get_device_name(0)}")
+            return device
+
+        # Use MPS (Metal Performance Shaders) for Mac if available and enabled
+        if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available() and mps_enabled:
+            device = torch.device('mps')
+            self.log_info("Using Apple Metal Performance Shaders (MPS) for GPU acceleration")
+            return device
+
+        # Fallback to CPU
+        self.log_info("No GPU available, using CPU")
+        return torch.device('cpu')
+
     def _validate_config(self, required_keys: list) -> None:
         """
         Validate that required configuration keys are present.

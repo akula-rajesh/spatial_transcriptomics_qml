@@ -34,10 +34,9 @@ class BaseModel(ABC, nn.Module):
         # Dropout and regularization
         self.dropout_rate = self.get_config_value('architecture.dropout_rate', 0.2)
         
-        # Device configuration
-        self.device = torch.device('cuda' if torch.cuda.is_available() and 
-                                  self.get_config_value('execution.cuda_enabled', True) else 'cpu')
-        
+        # Device configuration with Mac GPU (MPS), CUDA, and CPU support
+        self.device = self._get_device()
+
     @abstractmethod
     def forward(self, x: torch.Tensor) -> Union[torch.Tensor, Tuple[torch.Tensor, ...]]:
         """
@@ -72,6 +71,38 @@ class BaseModel(ABC, nn.Module):
         except (KeyError, TypeError):
             return default
             
+    def _get_device(self) -> torch.device:
+        """
+        Get the appropriate device (MPS for Mac GPU, CUDA for NVIDIA GPU, or CPU).
+
+        Returns:
+            torch.device: The selected device
+        """
+        # Check if GPU acceleration is enabled in config
+        gpu_enabled = self.get_config_value('execution.gpu_enabled', True)
+        cuda_enabled = self.get_config_value('execution.cuda_enabled', True)
+        mps_enabled = self.get_config_value('execution.mps_enabled', True)
+
+        if not gpu_enabled:
+            self.log_info("GPU acceleration disabled in config, using CPU")
+            return torch.device('cpu')
+
+        # Prefer CUDA if available and enabled
+        if torch.cuda.is_available() and cuda_enabled:
+            device = torch.device('cuda')
+            self.log_info(f"Using CUDA GPU: {torch.cuda.get_device_name(0)}")
+            return device
+
+        # Use MPS (Metal Performance Shaders) for Mac if available and enabled
+        if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available() and mps_enabled:
+            device = torch.device('mps')
+            self.log_info("Using Apple Metal Performance Shaders (MPS) for GPU acceleration")
+            return device
+
+        # Fallback to CPU
+        self.log_info("No GPU available, using CPU")
+        return torch.device('cpu')
+
     def _validate_config(self, required_keys: list) -> None:
         """
         Validate that required configuration keys are present.

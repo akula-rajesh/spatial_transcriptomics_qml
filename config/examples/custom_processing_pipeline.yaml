@@ -1,0 +1,74 @@
+# Example: Custom Processing Pipeline Configuration
+# This shows how to customize the data processing steps
+
+# Main pipeline configuration
+pipeline:
+  download_data: true
+  data_loader: "mendeley_downloader"  # Can be changed to any registered loader
+
+  process_data: true
+  processing_steps:
+    # Define custom processing pipeline
+    # Steps are executed in the order listed
+    - name: "file_organizer"
+      enabled: true
+
+    - name: "stain_normalizer"
+      enabled: true
+
+    - name: "spatial_gene_analyzer"
+      enabled: true
+
+  train_model: true
+  evaluate_model: true
+  compare_results: false
+
+# Data paths (can be absolute or relative)
+data:
+  mendeley_url: "https://data.mendeley.com/public-api/zip/29ntw7sh4r/download/5"
+  input_dir: "data/input/"
+  processed_dir: "data/processed/"
+  train_dir: "data/train/"
+  test_dir: "data/test/"
+  metadata_file: "metadata.csv"
+  verify_ssl: false
+  download_max_retries: 3
+  download_timeout: 300
+
+# Results storage
+results:
+  base_dir: "results/"
+  experiment_naming: "timestamp"
+  save_model_checkpoints: true
+  save_predictions: true
+  save_logs: true
+
+# Training configuration
+training:
+  batch_size: 32
+  epochs: 30
+  learning_rate: 0.001
+  early_stopping_patience: 20
+  validation_patience: 5
+  validation_metric: "loss"
+  num_workers: 8
+  shuffle: true
+  debug: false
+
+# Cross-validation configuration
+cross_validation:
+  folds: 5
+  type: "kfold"
+  shuffle: true
+  random_state: 42
+
+# Model selection
+models:
+  active_model: "classical_efficientnet"
+  save_best_only: true
+
+# Execution settings
+execution:
+  gpu_enabled: true
+  cuda_enabled: true
+  mps_enabled: true

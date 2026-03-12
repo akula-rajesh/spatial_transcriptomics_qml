@@ -8,10 +8,6 @@ spatial transcriptomics data.
 # Import key components for easy access
 from .base_pipeline import BaseDataPipeline
 from .factory import DataPipelineFactory, factory, register_data_pipeline_factories
-from .mendeley_downloader import MendeleyDownloader
-from .file_organizer import FileOrganizer
-from .stain_normalizer import StainNormalizer
-from .spatial_gene_analyzer import SpatialGeneAnalyzer
 
 # Package metadata
 __version__ = "1.0.0"
@@ -23,11 +19,7 @@ __all__ = [
     'BaseDataPipeline',
     'DataPipelineFactory',
     'factory',
-    'register_data_pipeline_factories',
-    'MendeleyDownloader',
-    'FileOrganizer',
-    'StainNormalizer',
-    'SpatialGeneAnalyzer'
+    'register_data_pipeline_factories'
 ]
 
 # Initialize package-level logging

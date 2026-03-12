@@ -16,6 +16,10 @@ A comprehensive machine learning pipeline for predicting spatial gene expression
   - [Quick Install](#quick-install)
   - [Full Installation with Extras](#full-installation-with-extras)
   - [Docker Installation (Alternative)](#docker-installation-alternative)
+- [GPU Support & Device Detection](#gpu-support--device-detection)
+  - [Checking Available Devices](#checking-available-devices)
+  - [Device Configuration](#device-configuration)
+  - [Platform-Specific Notes](#platform-specific-notes)
 - [Usage](#usage)
   - [Command Line Interface](#command-line-interface)
   - [Python API](#python-api)
@@ -26,6 +30,7 @@ A comprehensive machine learning pipeline for predicting spatial gene expression
 - [Examples](#examples)
   - [1. Basic Training Script](#1-basic-training-script)
   - [2. Quantum Model Example](#2-quantum-model-example)
+- [Documentation](#documentation)
 - [Contributing](#contributing)
   - [Getting Started](#getting-started)
   - [Development Guidelines](#development-guidelines)
@@ -93,7 +98,10 @@ spatial-transcriptomics-pipeline/
 
 - Python 3.8+
 - pip package manager
-- (Optional) CUDA-compatible GPU for accelerated training
+- (Optional) GPU for accelerated training:
+  - **NVIDIA GPU**: CUDA-compatible GPU (recommended)
+  - **Apple Silicon**: M1/M2/M3+ chips with MPS support
+  - **CPU only**: Works on any system (slower)
 
 ### Quick Install
 
@@ -234,6 +242,74 @@ RUN mkdir -p data logs results configs
 ENTRYPOINT ["python", "src/main.py"]
 CMD ["--help"]
 ```
+
+## GPU Support & Device Detection
+
+The pipeline automatically detects and uses the best available compute device.
+
+### Checking Available Devices
+
+```bash
+# Check what devices are available on your system
+python src/utils/device_utils.py
+```
+
+This will display:
+```
+======================================================================
+AVAILABLE COMPUTE DEVICES
+======================================================================
+
+[CPU]
+  ✓ Available (always)
+
+[NVIDIA CUDA]
+  ✓ Available (1 device(s))
+  
+  Device 0: NVIDIA GeForce RTX 3090
+    - Compute Capability: 8.6
+    - Total Memory: 24.00 GB
+
+[Apple Metal Performance Shaders (MPS)]
+  ✗ Not available
+
+======================================================================
+Recommended device: cuda
+======================================================================
+```
+
+### Device Configuration
+
+Configure device preferences in your config file:
+
+```yaml
+execution:
+  gpu_enabled: true      # Enable GPU acceleration
+  cuda_enabled: true     # Enable NVIDIA CUDA if available
+  mps_enabled: true      # Enable Apple MPS (Mac M1/M2/M3+) if available
+```
+
+**Device Priority**:
+1. NVIDIA CUDA GPU (if available and enabled)
+2. Apple MPS GPU (if available and enabled)
+3. CPU (fallback)
+
+### Platform-Specific Notes
+
+**macOS with Apple Silicon (M1/M2/M3+)**:
+- Requires PyTorch 1.12+ and macOS 12.3+
+- MPS provides GPU acceleration for Mac
+- Some operations may fall back to CPU (automatically handled)
+
+**Linux/Windows with NVIDIA GPU**:
+- Best performance with CUDA
+- Full feature support
+- Requires NVIDIA drivers and CUDA toolkit
+
+**CPU Only**:
+- Works on any platform
+- Slower training but functional
+- Good for testing and development
 
 ## Usage
 
@@ -446,6 +522,30 @@ try:
 except ImportError:
     print("Quantum computing dependencies not available")
 ```
+
+## Documentation
+
+Comprehensive documentation is available:
+
+- **[PROJECT_UNDERSTANDING.md](PROJECT_UNDERSTANDING.md)** - Complete technical documentation covering:
+  - Architecture and design patterns
+  - Detailed module breakdown
+  - Data flow and pipeline execution
+  - Model architectures explained
+  - Configuration system guide
+  - Technology stack details
+
+- **[DEVICE_SUPPORT.md](DEVICE_SUPPORT.md)** - GPU and device support guide:
+  - Platform-specific setup (CUDA, MPS, CPU)
+  - Device detection and configuration
+  - Performance comparisons
+  - Troubleshooting guide
+  - Best practices for each platform
+
+- **[DEVICE_QUICKREF.md](DEVICE_QUICKREF.md)** - Quick reference card:
+  - Common commands
+  - Configuration snippets
+  - Quick troubleshooting tips
 
 ## Contributing
 

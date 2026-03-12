@@ -238,14 +238,14 @@ class SupervisedTrainer(BaseTrainer):
         train_loader = DataLoader(
             train_dataset, 
             batch_size=self.batch_size, 
-            shuffle=True,
-            num_workers=self.get_config_value('data.num_workers', 0)
+            shuffle=self.shuffle,
+            num_workers=self.num_workers
         )
         val_loader = DataLoader(
             val_dataset, 
             batch_size=self.batch_size, 
             shuffle=False,
-            num_workers=self.get_config_value('data.num_workers', 0)
+            num_workers=self.num_workers
         )
         
         self.log_info(f"Prepared data loaders - Train: {len(train_dataset)}, Val: {len(val_dataset)}")
@@ -278,7 +278,7 @@ class SupervisedTrainer(BaseTrainer):
             test_dataset, 
             batch_size=self.batch_size, 
             shuffle=False,
-            num_workers=self.get_config_value('data.num_workers', 0)
+            num_workers=self.num_workers
         )
         
         self.log_info(f"Prepared test loader - Test: {len(test_dataset)}")
@@ -320,7 +320,8 @@ class SupervisedTrainer(BaseTrainer):
             main_loss = criterion(outputs, targets)
             
             # Add auxiliary loss if available
-            if aux_outputs and len(aux_outputs) > 0:
+            # Check if aux_outputs is not None and is a list/tuple with elements
+            if aux_outputs is not None and isinstance(aux_outputs, (list, tuple)) and len(aux_outputs) > 0:
                 aux_weight = self.get_config_value('training.auxiliary_weight', 0.3)
                 aux_loss = 0.0
                 for aux_output in aux_outputs:
@@ -353,10 +354,18 @@ class SupervisedTrainer(BaseTrainer):
             
             # Update progress bar
             progress_bar.set_postfix({
-                'loss': f"{loss.item():.6f}",
-                'mae': f"{torch.abs(outputs - targets).mean().item():.6f}"
+                'loss': f"{loss.item():.4f}",
+                'avg_loss': f"{total_loss / total_samples:.4f}"
             })
-            
+
+            # Debug mode logging
+            if self.debug_mode and batch_idx % 10 == 0:
+                self.log_info(
+                    f"  Batch [{batch_idx}/{len(train_loader)}] - "
+                    f"Loss: {loss.item():.6f} - "
+                    f"MAE: {torch.abs(outputs - targets).mean().item():.6f}"
+                )
+
         # Calculate average metrics
         avg_loss = total_loss / total_samples
         avg_mae = total_mae / total_samples

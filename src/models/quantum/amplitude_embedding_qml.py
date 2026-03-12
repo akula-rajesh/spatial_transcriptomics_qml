@@ -67,9 +67,13 @@ class QuantumAmplitudeEmbeddingModel(BaseModel):
         # Classical feature extractor (simplified for this example)
         self.classical_extractor = self._build_classical_extractor()
         
+        # Calculate actual feature size from classical extractor
+        # Classical extractor outputs: 128 channels × 4 × 4 = 2048 features
+        actual_feature_size = 128 * 4 * 4  # 2048
+
         # Feature projection to quantum dimension
         self.feature_projection = nn.Sequential(
-            nn.Linear(self.preprocessing_features, 1024),
+            nn.Linear(actual_feature_size, 1024),
             nn.ReLU(inplace=True),
             nn.Dropout(self.dropout_rate),
             nn.Linear(1024, self.quantum_feature_dimension),

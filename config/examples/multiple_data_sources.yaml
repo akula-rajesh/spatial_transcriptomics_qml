@@ -1,0 +1,75 @@
+# Example: Multiple Data Loaders Pipeline
+# This shows how to use multiple data sources
+
+pipeline:
+  download_data: true
+
+  # Multiple data loaders (executed in order)
+  data_loaders:
+    - name: "mendeley_downloader"
+      enabled: true
+
+    # You can add more loaders here when implemented
+    # - name: "custom_api_downloader"
+    #   enabled: true
+    # - name: "hdf5_downloader"
+    #   enabled: true
+
+  process_data: true
+  processing_steps:
+    # Custom step to merge data from multiple sources
+    # - name: "data_merger"
+    #   enabled: true
+    #   sources:
+    #     - "data/mendeley_input/"
+    #     - "data/custom_input/"
+
+    - name: "file_organizer"
+      enabled: true
+
+    - name: "stain_normalizer"
+      enabled: true
+
+    - name: "spatial_gene_analyzer"
+      enabled: true
+
+  train_model: true
+  evaluate_model: true
+
+# Data configuration for multiple sources
+data:
+  # Mendeley data source
+  mendeley_url: "https://data.mendeley.com/public-api/zip/29ntw7sh4r/download/5"
+  input_dir: "data/mendeley_input/"
+
+  # Custom API data source (example)
+  # custom_api_url: "https://api.example.com/data"
+  # custom_input_dir: "data/custom_input/"
+
+  # HDF5 data source (example)
+  # hdf5_path: "/path/to/data.h5"
+  # hdf5_output_dir: "data/hdf5_input/"
+
+  # Common processing directories
+  processed_dir: "data/processed/"
+  train_dir: "data/train/"
+  test_dir: "data/test/"
+  verify_ssl: false
+
+results:
+  base_dir: "results/multi_source/"
+  experiment_naming: "timestamp"
+
+training:
+  batch_size: 32
+  epochs: 30
+  learning_rate: 0.001
+  num_workers: 8
+
+models:
+  active_model: "classical_efficientnet"
+
+execution:
+  gpu_enabled: true
+  cuda_enabled: true
+  mps_enabled: true

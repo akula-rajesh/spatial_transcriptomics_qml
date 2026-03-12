@@ -1,19 +1,55 @@
 # Main pipeline configuration
 pipeline:
-  download_data: true
-  process_data: true
+  download_data: false
+  # Data loader selection - using spatial downloader for BRSTNet pipeline
+  data_loader: "spatial_downloader"
+
+  process_data: false
+  # Processing steps - BRSTNet sequential pipeline
+  processing_steps:
+    - name: "spatial_file_organizer"
+      enabled: true
+    - name: "spatial_gene_processor"
+      enabled: true
+    - name: "spatial_stain_normalizer"
+      enabled: true
+    - name: "spatial_patch_extractor"
+      enabled: true
+
   train_model: true
   evaluate_model: true
   compare_results: true
-  
+
+# Download configuration
+download:
+  url: "https://data.mendeley.com/public-api/zip/29ntw7sh4r/download/5"
+  remove_zip: true
+  chunk_size: 1024
+  max_retries: 3
+  timeout: 300
+
 # Data paths (can be absolute or relative)
 data:
-  mendeley_url: "https://data.mendeley.com/public-api/zip/29ntw7sh4r/download/5"
   input_dir: "data/input/"
   processed_dir: "data/processed/"
   train_dir: "data/train/"
   test_dir: "data/test/"
   metadata_file: "metadata.csv"
+  verify_ssl: false  # Set to false if behind corporate proxy or with self-signed certificates
+
+  # Spatial pipeline-specific paths
+  stbc_dir: "data/stbc/"  # Organized files by subtype/patient
+  raw_dir: "data/raw/"
+  organized_dir: "data/organized/"
+  count_filtered_dir: "data/processed/count_filtered/"
+  stained_dir: "data/stained/"
+  train_counts_dir: "data/train/counts/"
+  train_images_dir: "data/train/images/"
+  test_counts_dir: "data/test/counts/"
+  test_images_dir: "data/test/images/"
+
+  # Test patient configuration
+  test_patient: "BC23450"  # Patient ID to hold out for testing
 
 # Results storage
 results:
@@ -26,19 +62,25 @@ results:
 # Training configuration
 training:
   batch_size: 32
-  epochs: 50
+  epochs: 30
   learning_rate: 0.001
   early_stopping_patience: 20
   validation_patience: 5
-  cross_validation_folds: 5
   validation_metric: "loss"  # Options: loss, aMAE, aRMSE, aCC
   num_workers: 8
   shuffle: true
   debug: false
 
+# Cross-validation configuration
+cross_validation:
+  folds: 5
+  type: "kfold"  # Options: kfold, stratified
+  shuffle: true
+  random_state: 42
+
 # Model selection
 models:
-  active_model: "classical_efficientnet"  # Default model to run
+  active_model: "quantum_amplitude_embedding"  # Default model to run
   compare_models: 
     - "classical_efficientnet"
     - "quantum_amplitude_embedding"
@@ -57,6 +99,10 @@ gene_expression:
   min_expression_percent: 0.10  # Expressed in at least 10% of spots
   top_genes_to_predict: 250
 
+# Preprocessing configuration
+preprocessing:
+  window_size: 224  # Patch window size for spatial_patch_extractor
+
 # Spatial processing
 spatial:
   patch_window_size: 224
@@ -65,5 +111,7 @@ spatial:
 # Execution control
 execution:
   seed: 0
-  cuda_enabled: true
+  gpu_enabled: true            # Enable GPU acceleration (CUDA or MPS)
+  cuda_enabled: true           # Enable NVIDIA CUDA GPU if available
+  mps_enabled: true            # Enable Apple Metal Performance Shaders (Mac GPU) if available
   max_image_pixels: 1000000000

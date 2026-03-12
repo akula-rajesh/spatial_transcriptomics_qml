@@ -1,0 +1,20 @@
+{
+  "classical_efficientnet_eval_mae": [
+    {
+      "value": 0.5015128898620606,
+      "timestamp": "2026-03-12T15:10:37.427182"
+    }
+  ],
+  "classical_efficientnet_eval_rmse": [
+    {
+      "value": 0.5793509602546691,
+      "timestamp": "2026-03-12T15:10:37.427213"
+    }
+  ],
+  "classical_efficientnet_eval_correlation_coefficient": [
+    {
+      "value": -0.005185422413051128,
+      "timestamp": "2026-03-12T15:10:37.427217"
+    }
+  ]
+}

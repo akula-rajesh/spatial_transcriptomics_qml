@@ -1,0 +1,49 @@
+# Example: Minimal Processing Pipeline
+# Skip certain processing steps for faster experimentation
+
+pipeline:
+  download_data: true
+  data_loader: "mendeley_downloader"
+
+  process_data: true
+  processing_steps:
+    # Only run file organization, skip intensive processing
+    - name: "file_organizer"
+      enabled: true
+
+    - name: "stain_normalizer"
+      enabled: false  # DISABLED - Skip stain normalization for speed
+
+    - name: "spatial_gene_analyzer"
+      enabled: false  # DISABLED - Skip gene analysis for speed
+
+  train_model: true
+  evaluate_model: true
+
+data:
+  mendeley_url: "https://data.mendeley.com/public-api/zip/29ntw7sh4r/download/5"
+  input_dir: "data/input/"
+  processed_dir: "data/processed/"
+  train_dir: "data/train/"
+  test_dir: "data/test/"
+  verify_ssl: false
+
+results:
+  base_dir: "results/quick_experiment/"
+  experiment_naming: "timestamp"
+
+training:
+  batch_size: 64  # Larger batch for speed
+  epochs: 10      # Fewer epochs for quick testing
+  learning_rate: 0.001
+  early_stopping_patience: 5
+  num_workers: 8
+
+models:
+  active_model: "classical_efficientnet"
+  save_best_only: true
+
+execution:
+  gpu_enabled: true
+  cuda_enabled: true
+  mps_enabled: true

@@ -1,0 +1,14 @@
+{
+  "classical_efficientnet_best_val_loss": [
+    {
+      "value": 0.08360326290130615,
+      "timestamp": "2026-03-12T06:38:12.305290"
+    }
+  ],
+  "classical_efficientnet_training_time": [
+    {
+      "value": 3768.7070190906525,
+      "timestamp": "2026-03-12T06:38:12.305309"
+    }
+  ]
+}
