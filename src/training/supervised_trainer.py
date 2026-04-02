@@ -20,6 +20,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from typing import Dict, Any, Optional, List, Tuple
 
 from src.training.metrics import (
@@ -205,7 +206,11 @@ def fit(
         X, y, aux, *_ = _unpack_batch(batch, aux_ratio, device)
 
         optimizer.zero_grad()
-        pred = model(X)
+        # V4 model needs y_targets for in-batch KRR prediction head
+        if hasattr(model, 'compute_alignment_loss'):
+            pred = model(X, y_targets=y)
+        else:
+            pred = model(X)
         main_pred, aux_pred = _unpack_pred(pred, aux_ratio)
 
         if aux_ratio > 0 and aux_pred is not None:
@@ -339,6 +344,17 @@ def validate(
     total_loss      /= n
     total_main_loss /= n
     total_aux_loss  /= n
+
+    if not epoch_preds:
+        raise RuntimeError(
+            "validate() received zero batches from val_loader. "
+            "The test patient set in data.test_patient likely does not match "
+            "the patient directory found under data/test/counts/. "
+            f"Check that data.test_patient in your config matches the folder "
+            "inside data/test/counts/<subtype>/<patient>/. "
+            "Tip: run 'python scripts/swap_test_patient.py --dry-run --new-test <ID>' "
+            "to preview the correct swap, or update data.test_patient in your config."
+        )
 
     epoch_preds  = np.concatenate(epoch_preds)
     epoch_counts = np.concatenate(epoch_counts)
@@ -614,24 +630,38 @@ class SupervisedTrainer:
         start_time = time.time()
 
         # ── V2: Phase-aware setup ────────────────────────────────────────
-        # If the model is QNNGenePredictorV2, log the active phase and
-        # fit the local quantum loss PCA projector on the training set.
         self._setup_v2_model(train_loader)
+
+        # ── V4: Phase-aware setup ────────────────────────────────────────
+        # If the model is QNNGenePredictorV4, apply the configured phase
+        # so the correct parameter groups are frozen/unfrozen.
+        is_v4 = hasattr(self.model, 'compute_alignment_loss')
+        if is_v4:
+            phase = self.config.get('model', {}).get('training_phase',
+                    self.config.get('training', {}).get('phase', 2))
+            if hasattr(self.model, 'set_phase'):
+                self.model.set_phase(int(phase))
+            logger.info(f"[SupervisedTrainer] V4 model detected — phase={phase}")
 
         for epoch in range(self.epochs):
             self.current_epoch = epoch
             print(f"\nEpoch #{epoch + 1}/{self.epochs}:")
 
-            # Training step
-            train_m = fit(
-                model        = self.model,
-                train_loader = train_loader,
-                optimizer    = self.optimizer,
-                criterion    = self.criterion,
-                aux_ratio    = self.aux_ratio,
-                aux_weight   = self.aux_weight,
-                device       = self.device,
-            )
+            # ── Training step — V4 uses its own dual-loss loop ───────────
+            if is_v4:
+                print('-' * 10)
+                print('Training:')
+                train_m = self._train_epoch_v4(train_loader, epoch)
+            else:
+                train_m = fit(
+                    model        = self.model,
+                    train_loader = train_loader,
+                    optimizer    = self.optimizer,
+                    criterion    = self.criterion,
+                    aux_ratio    = self.aux_ratio,
+                    aux_weight   = self.aux_weight,
+                    device       = self.device,
+                )
 
             # CosineAnnealingLR step
             self.scheduler.step()
@@ -1070,6 +1100,107 @@ class SupervisedTrainer:
         torch.save(self.model, path)
         logger.info(f"[SupervisedTrainer] Model saved to {path}")
 
+    def _train_epoch_v4(
+            self,
+            train_loader: torch.utils.data.DataLoader,
+            epoch: int,
+    ) -> Dict[str, float]:
+        """
+        One training epoch for QNNGenePredictorV4 (quantum kernel alignment).
+
+        Dual loss:
+            total = MSE(ŷ, y)  +  kernel_loss_weight × KernelAlignment(K, K*)
+
+        The model's forward(x, y_targets=y) handles:
+          - Building the kernel matrix K via quantum circuit
+          - In-batch KRR prediction using K
+          - Storing K in model._last_kernel_matrix for alignment loss
+
+        compute_alignment_loss(y) then computes 1 - A(K, K*) where K* is the
+        RBF kernel on gene expression targets.
+        """
+        model  = self.model
+        model.train()
+
+        kernel_loss_weight    = getattr(model, 'kernel_loss_weight', 0.3)
+        total_mse_loss        = 0.0
+        total_alignment_loss  = 0.0
+        total_alignment_score = 0.0
+        epoch_preds           = []
+        epoch_counts          = []
+        n_batches             = 0
+
+        for batch in train_loader:
+            X, y, aux, *_ = _unpack_batch(batch, self.aux_ratio, self.device)
+
+            self.optimizer.zero_grad()
+
+            # V4 forward — pass y so KRR head can fit in-batch
+            pred_main, pred_aux = model(X, y_targets=y)
+
+            # MSE prediction loss
+            mse_loss = self.criterion(pred_main, y)
+
+            # Kernel alignment loss (uses model._last_kernel_matrix set by forward)
+            alignment_loss, alignment_score = model.compute_alignment_loss(y)
+
+            # Combined loss
+            loss = mse_loss + kernel_loss_weight * alignment_loss
+
+            # Optional aux loss
+            if pred_aux is not None and self.aux_ratio > 0 and aux is not None:
+                if aux.shape[1] != pred_aux.shape[1]:
+                    if aux.shape[1] < pred_aux.shape[1]:
+                        pad = torch.zeros(
+                            aux.shape[0], pred_aux.shape[1] - aux.shape[1],
+                            device=aux.device, dtype=aux.dtype,
+                        )
+                        aux = torch.cat([aux, pad], dim=1)
+                    else:
+                        aux = aux[:, :pred_aux.shape[1]]
+                loss = loss + self.aux_weight * self.criterion(pred_aux, aux)
+
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            self.optimizer.step()
+
+            total_mse_loss        += mse_loss.item()
+            total_alignment_loss  += alignment_loss.item()
+            total_alignment_score += alignment_score
+            epoch_preds.append(pred_main.cpu().detach().numpy())
+            epoch_counts.append(y.cpu().detach().numpy())
+            n_batches += 1
+
+        n = max(n_batches, 1)
+        avg_mse       = total_mse_loss / n
+        avg_align     = total_alignment_loss / n
+        avg_align_sc  = total_alignment_score / n
+
+        all_preds  = np.concatenate(epoch_preds)
+        all_counts = np.concatenate(epoch_counts)
+        metrics    = compute_all_metrics(all_preds, all_counts)
+
+        print(
+            f"Loss={avg_mse:.4f}  AlignLoss={avg_align:.4f}  "
+            f"AlignScore={avg_align_sc:.4f}  "
+            f"aMAE={metrics['amae']:.4f}  aRMSE={metrics['armse']:.4f}  "
+            f"aCC={metrics['correlation_coefficient']:.4f}"
+        )
+
+        logger.info(
+            f"[V4 Train Epoch {epoch+1}] "
+            f"MSE={avg_mse:.6f}  AlignLoss={avg_align:.6f}  "
+            f"AlignScore={avg_align_sc:.4f}  "
+            f"aCC={metrics['correlation_coefficient']:.4f}"
+        )
+
+        return {
+            'loss':                    avg_mse,
+            'alignment_loss':          avg_align,
+            'alignment_score':         avg_align_sc,
+            **metrics,
+        }
+
     def _save_live_checkpoint(self) -> None:
         """
         Write a live results.json after every epoch.
@@ -1193,6 +1324,7 @@ def run_cross_validation(
         f"rmse_e={best_rmse_e} acc_e={best_acc_e} → best={best_epoch}"
     )
     return best_epoch
+
 
 
 # Legacy alias kept so factory.py still resolves 'supervised_trainer'

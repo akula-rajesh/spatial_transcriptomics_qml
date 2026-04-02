@@ -1,0 +1,81 @@
+# ============================================================
+# V4 Phase 0 — Classical Warmup
+# Train backbone + feature reducer only; quantum kernel frozen
+# ============================================================
+#
+# Run: python src/main.py --config config/pipeline_config_qnn_v4_phase0.yaml --mode train
+#
+# After completion, use the saved checkpoint as --resume for phase 1.
+# ============================================================
+
+pipeline:
+  download_data:  false
+  process_data:   false
+  train_model:    true
+  evaluate_model: false
+  compare_results: false
+
+data:
+  train_counts_dir:  "data/train/counts/"
+  train_images_dir:  "data/train/images/"
+  test_counts_dir:   "data/test/counts/"
+  test_images_dir:   "data/test/images/"
+  test_patient:      "BC23209"
+
+results:
+  base_dir:              "results/"
+  experiment_naming:     "timestamp"
+  save_model_checkpoints: true
+
+training:
+  epochs:       20              # Short warmup — just calibrate backbone
+  optimizer:    "adam"
+  lr:           0.001           # Higher LR OK when quantum frozen
+  weight_decay: 0.00001
+  scheduler:    "cosine"
+  cosine_t_max: 5
+  batch_size:   16
+  num_workers:  4
+  shuffle:      true
+  early_stopping_patience: 10
+  early_stopping_delta:    0.0
+  pred_root:    "results/predictions/"
+  kernel_loss_weight: 0.0       # Phase 0: no alignment loss
+
+model:
+  gene_filter:          250
+  aux_ratio:            0.0
+  aux_weight:           0.0
+  pretrained:           true
+  finetuning:           "ft2"
+  n_qubits:             4
+  n_layers:             2
+  embedding_type:       "angle"
+  q_device:             "default.qubit"
+  init_noise:           0.01
+  target_kernel_type:   "rbf"
+  rbf_sigma:            1.0
+  center_kernel:        true
+  kernel_loss_weight:   0.0
+  ridge_lambda:         0.001
+  n_landmarks:          0
+  use_nystrom:          false
+  residual_correction:  true
+  residual_hidden_dim:  128
+  residual_dropout:     0.2
+  reduce_dim:           256
+  decode_dim:           256
+  reducer_dropout:      0.2
+  training_phase:       0       # ← Phase 0: backbone+reducer trainable, QNN frozen
+  total_genes:          null
+
+models:
+  active_model:   "qnn_gene_predictor_v4"
+  save_best_only: true
+
+preprocessing:
+  window_size: 299
+
+split:
+  test_patients:
+    - "BC23209"

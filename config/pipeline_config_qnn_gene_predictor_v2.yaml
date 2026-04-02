@@ -91,7 +91,7 @@ data:
   test_counts_dir:    "data/test/counts/"
   test_images_dir:    "data/test/images/"
 
-  test_patient: "BC23450"
+  test_patient: "BC23209"
 
 # ── Results ───────────────────────────────────────────────────────────────────
 results:

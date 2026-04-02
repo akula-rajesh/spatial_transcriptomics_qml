@@ -1,0 +1,68 @@
+# ============================================================
+# Model Configuration — QNN Gene Predictor V4
+# Quantum Kernel Alignment for Gene Expression Prediction
+# ============================================================
+#
+# Architecture:
+#   ① EfficientNet-B4 backbone          (B, 1792)
+#   ② FeatureReducer MLP                (B, n_qubits)   angles ∈ [-π, π]
+#   ③ QuantumKernelCircuit              K[i,j] = |⟨φ(xᵢ;θ)|φ(xⱼ;θ)⟩|²
+#   ④ KernelAlignmentLoss               1 - A(K, K*)  where K*=RBF(y)
+#   ⑤ KernelRidgeRegression head        ŷ = K @ (K+λI)⁻¹ @ y
+#   ⑥ ResidualCorrectionHead MLP        ŷ_final = ŷ_kernel + ŷ_residual
+#
+# Key advantage over V1-V3:
+#   No barren plateau     — kernel alignment is a convex problem per layer
+#   No rank bottleneck    — KRR prediction rank = batch_size (not n_qubits)
+#   Geometric learning    — quantum kernel learns tissue similarity structure
+#   Dual loss             — MSE (prediction) + alignment (geometry)
+#
+# ============================================================
+
+model:
+  # ── Output dimensions ────────────────────────────────────────────────
+  gene_filter:       250         # Main gene predictions
+  aux_ratio:         0.0         # Aux genes (0 = disabled for V4)
+  aux_weight:        0.0
+
+  # ── Backbone ─────────────────────────────────────────────────────────
+  pretrained:        true
+  finetuning:        "ft2"       # ft2 = last 2 blocks trainable
+                                  # frozen | ft1 | ft2 | ftall
+
+  # ── Quantum kernel circuit ────────────────────────────────────────────
+  n_qubits:          4           # 4 qubits — good gradient flow
+  n_layers:          2           # 2 variational layers
+  embedding_type:    "angle"     # angle | iqp | amplitude
+  q_device:          "default.qubit"
+  init_noise:        0.01        # near-zero init — anti-barren-plateau
+
+  # ── Kernel alignment ─────────────────────────────────────────────────
+  target_kernel_type:  "rbf"     # rbf | linear | label
+  rbf_sigma:           1.0       # bandwidth σ for RBF target kernel
+  center_kernel:       true      # center K before alignment (Cortes 2012)
+  kernel_loss_weight:  0.3       # α in: loss = MSE + α × AlignmentLoss
+
+  # ── KRR prediction head ───────────────────────────────────────────────
+  ridge_lambda:      0.001       # regularisation λ in (K + λI)⁻¹
+  n_landmarks:       0           # 0 = full batch (no Nyström)
+  use_nystrom:       false       # true for batch_size > 64
+
+  # ── Residual correction head ─────────────────────────────────────────
+  residual_correction:  true
+  residual_hidden_dim:  128
+  residual_dropout:     0.2
+
+  # ── Feature reducer ───────────────────────────────────────────────────
+  reduce_dim:        256
+  decode_dim:        256
+  reducer_dropout:   0.2
+
+  # ── Phase control ─────────────────────────────────────────────────────
+  # 0 = classical warmup (backbone + reducer frozen QNN)
+  # 1 = quantum alignment (only θ trainable)
+  # 2 = joint fine-tuning (all params)
+  training_phase:    2
+
+  # ── Auto-resolved at runtime ──────────────────────────────────────────
+  total_genes:       null

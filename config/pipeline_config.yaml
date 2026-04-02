@@ -49,7 +49,7 @@ data:
   test_images_dir: "data/test/images/"
 
   # Test patient configuration
-  test_patient: "BC23450"  # Patient ID to hold out for testing
+  test_patient: "BC23209"  # Patient ID to hold out for testing
 
 # Results storage
 results:

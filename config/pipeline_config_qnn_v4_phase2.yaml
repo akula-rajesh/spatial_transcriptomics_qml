@@ -1,0 +1,106 @@
+# ============================================================
+# V4 Phase 2 — Joint Fine-Tuning
+# All parameters trainable: backbone, reducer, quantum kernel, residual head.
+# Balanced dual loss: MSE + kernel alignment.
+#
+# Run:
+#   python src/main.py \
+#     --config config/pipeline_config_qnn_v4_phase2.yaml \
+#     --resume results/<phase1_experiment>/models/qnn_gene_predictor_v4_final.pth \
+#     --mode train
+#
+# This is the final training phase — produces the best evaluation checkpoint.
+# ============================================================
+
+pipeline:
+  download_data:   false
+  process_data:    false
+  train_model:     true
+  evaluate_model:  true         # Run evaluation after training
+  compare_results: false
+
+data:
+  train_counts_dir:  "data/train/counts/"
+  train_images_dir:  "data/train/images/"
+  test_counts_dir:   "data/test/counts/"
+  test_images_dir:   "data/test/images/"
+  # THIS IS THE AUTHORITATIVE FIELD — all code reads data.test_patient
+  test_patient:      "BC23209"
+
+results:
+  base_dir:               "results/"
+  experiment_naming:      "timestamp"
+  save_model_checkpoints: true
+  save_predictions:       true
+  save_logs:              true
+
+training:
+  epochs:       30              # Full joint fine-tuning
+  optimizer:    "adam"
+  lr:           0.0003          # 3e-4: good balance for quantum + classical
+  weight_decay: 0.00001         # 1e-5
+  scheduler:    "cosine"
+  cosine_t_max: 10              # Longer T_max for smoother decay
+  batch_size:   16
+  num_workers:  4
+  shuffle:      true
+  early_stopping_patience: 15
+  early_stopping_delta:    0.0
+  validation_metric: "loss"
+  pred_root:    "results/predictions/"
+  resume_path:  null            # Set via --resume CLI argument
+
+  # V4-specific: balanced dual loss
+  # Phase 2: balanced MSE + alignment → 0.3
+  kernel_loss_weight: 0.3
+
+model:
+  gene_filter:         250
+  aux_ratio:           0.0      # Disabled for V4
+  aux_weight:          0.0
+  pretrained:          true
+  finetuning:          "ft2"
+  n_qubits:            4
+  n_layers:            2
+  embedding_type:      "angle"
+  q_device:            "default.qubit"
+  init_noise:          0.01
+
+  # Kernel alignment
+  target_kernel_type:  "rbf"
+  rbf_sigma:           1.0
+  center_kernel:       true
+  kernel_loss_weight:  0.3      # Phase 2: balanced
+
+  # KRR head
+  ridge_lambda:        0.001
+  n_landmarks:         0
+  use_nystrom:         false
+
+  # Residual correction head
+  residual_correction:  true
+  residual_hidden_dim:  128
+  residual_dropout:     0.2
+
+  # Feature reducer
+  reduce_dim:          256
+  decode_dim:          256
+  reducer_dropout:     0.2
+
+  # ← Phase 2: ALL parameters trainable (joint fine-tuning)
+  training_phase:      2
+  total_genes:         null     # Auto-resolved from dataset at runtime
+
+models:
+  active_model:   "qnn_gene_predictor_v4"
+  save_best_only: true
+
+preprocessing:
+  window_size:         299      # Paper default: 299
+  quality_threshold:   1000
+  sparsity_threshold:  0.10
+
+split:
+  # For reference only — NOT read by code. Edit data.test_patient instead.
+  test_patients:
+    - "BC23209"

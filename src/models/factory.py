@@ -13,6 +13,7 @@ from src.models.quantum.amplitude_embedding_qml import QuantumAmplitudeEmbedding
 from src.models.quantum.efficientnet_quantum_head import EfficientNetQuantumHead
 from src.models.quantum.qnn_gene_predictor import QNNGenePredictor
 from src.models.quantum.qnn_gene_predictor_v2 import QNNGenePredictorV2
+from src.models.quantum.qnn_gene_predictor_v4 import QNNGenePredictorV4
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,7 @@ class ModelFactory:
         'efficientnet_quantum_head':    lambda config: EfficientNetQuantumHead(config),
         'qnn_gene_predictor':           lambda config: QNNGenePredictor(config),
         'qnn_gene_predictor_v2':        lambda config: QNNGenePredictorV2(config),
+        'qnn_gene_predictor_v4':        lambda config: QNNGenePredictorV4(config),
     }
 
     # ...existing code...
@@ -88,6 +90,10 @@ def _create_qnn_gene_predictor_v2(config: Dict[str, Any]) -> QNNGenePredictorV2:
     """Create a QNN Gene Predictor V2 model instance (improved gradient flow + anti-barren-plateau)."""
     return QNNGenePredictorV2(config)
 
+def _create_qnn_gene_predictor_v4(config: Dict[str, Any]) -> QNNGenePredictorV4:
+    """Create a QNN Gene Predictor V4 model instance (quantum kernel alignment + KRR head)."""
+    return QNNGenePredictorV4(config)
+
 # Register all model components with the global factory registry
 def register_model_factories() -> None:
     """Register all model factories with the global registry."""
@@ -96,7 +102,8 @@ def register_model_factories() -> None:
     register_factory(ComponentType.MODEL, 'quantum_amplitude_embedding', _create_quantum_amplitude_embedding_model)
     register_factory(ComponentType.MODEL, 'efficientnet_quantum_head',   _create_efficientnet_quantum_head_model)
     register_factory(ComponentType.MODEL, 'qnn_gene_predictor',          _create_qnn_gene_predictor)
-    register_factory(ComponentType.MODEL, 'qnn_gene_predictor_v2',       _create_qnn_gene_predictor_v2)
+    register_factory(ComponentType.MODEL, 'qnn_gene_predictor_v2',        _create_qnn_gene_predictor_v2)
+    register_factory(ComponentType.MODEL, 'qnn_gene_predictor_v4',        _create_qnn_gene_predictor_v4)
     logger.info("Registered all model factories")
 
 # Automatically register factories when module is imported
@@ -123,8 +130,12 @@ try:
     ModelFactory._components['qnn_gene_predictor_v2'] = lambda config: QNNGenePredictorV2(config)
     register_factory(ComponentType.MODEL, 'qnn_gene_predictor_v2', _create_qnn_gene_predictor_v2)
 
-    logger.info("Quantum model factories registered: quantum_amplitude_embedding, efficientnet_quantum_head, qnn_gene_predictor, qnn_gene_predictor_v2")
+    from src.models.quantum.qnn_gene_predictor_v4 import QNNGenePredictorV4 as _V4
+    ModelFactory._components['qnn_gene_predictor_v4'] = lambda config: _V4(config)
+    register_factory(ComponentType.MODEL, 'qnn_gene_predictor_v4', _create_qnn_gene_predictor_v4)
+
+    logger.info("Quantum model factories registered: quantum_amplitude_embedding, efficientnet_quantum_head, qnn_gene_predictor, qnn_gene_predictor_v2, qnn_gene_predictor_v4")
 except ImportError:
     logger.warning("Quantum components not available - quantum models will not be usable")
 
-__all__ = ['ModelFactory', 'factory', 'register_model_factories', 'QNNGenePredictorV2']
+__all__ = ['ModelFactory', 'factory', 'register_model_factories', 'QNNGenePredictorV2', 'QNNGenePredictorV4']

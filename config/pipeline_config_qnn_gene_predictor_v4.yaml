@@ -1,0 +1,217 @@
+# ============================================================
+# Pipeline Configuration — QNN Gene Predictor V4
+# Quantum Kernel Alignment for Gene Expression Prediction
+# ============================================================
+#
+# Model   : EfficientNet-B4 → FeatureReducer → QuantumKernelCircuit
+#           → KernelRidgeRegression + ResidualCorrection → gene heads
+#
+# Key differences from V1/V2/V3:
+#   - Uses quantum KERNEL matrix K[i,j] = |⟨φ(xᵢ)|φ(xⱼ)⟩|² (fidelity)
+#   - Kernel Target Alignment loss trains circuit to match gene similarity
+#   - KRR head avoids rank bottleneck (rank = batch_size, not n_qubits)
+#   - Dual loss: MSE + α × KernelAlignmentLoss
+#   - Adam optimizer with lower lr (quantum gradients are tiny)
+#
+# Three-phase training recommended:
+#   Phase 0: python src/main.py --config config/pipeline_config_qnn_gene_predictor_v4_phase0.yaml
+#   Phase 1: python src/main.py --config config/pipeline_config_qnn_gene_predictor_v4_phase1.yaml --resume <phase0_ckpt>
+#   Phase 2: python src/main.py --config config/pipeline_config_qnn_gene_predictor_v4_phase2.yaml --resume <phase1_ckpt>
+#
+# Single-run (phase 2 = joint):
+#   python src/main.py --config config/pipeline_config_qnn_gene_predictor_v4.yaml --mode train
+#
+# ============================================================
+
+# ── Pipeline steps ────────────────────────────────────────────────────
+pipeline:
+  download_data:  false
+  process_data:   false
+  train_model:    true
+  evaluate_model: true
+  compare_results: false
+
+  data_loader: "spatial_downloader"
+  processing_steps:
+    - name: "spatial_file_organizer"
+      enabled: true
+    - name: "spatial_gene_processor"
+      enabled: true
+    - name: "spatial_stain_normalizer"
+      enabled: true
+    - name: "spatial_patch_extractor"
+      enabled: true
+
+# ── Download (only used when download_data: true) ─────────────────────
+download:
+  url: "https://data.mendeley.com/public-api/zip/29ntw7sh4r/download/5"
+  remove_zip: true
+  chunk_size: 1024
+  max_retries: 3
+  timeout: 300
+
+# ── Data paths ────────────────────────────────────────────────────────
+data:
+  input_dir:            "data/input/"
+  processed_dir:        "data/processed/"
+  train_dir:            "data/train/"
+  test_dir:             "data/test/"
+  metadata_file:        "metadata.csv"
+  verify_ssl:           false
+
+  stbc_dir:             "data/stbc/"
+  raw_dir:              "data/raw/"
+  organized_dir:        "data/organized/"
+  count_filtered_dir:   "data/processed/count_filtered/"
+  stained_dir:          "data/stained/"
+  train_counts_dir:     "data/train/counts/"
+  train_images_dir:     "data/train/images/"
+  test_counts_dir:      "data/test/counts/"
+  test_images_dir:      "data/test/images/"
+
+  # ── THIS IS THE AUTHORITATIVE FIELD — all code reads data.test_patient
+  # The train/test split is controlled entirely by this single value.
+  # Training patients = all patients in data/train/counts/ EXCEPT this one.
+  test_patient: "BC23209"
+
+# ── Results ───────────────────────────────────────────────────────────
+results:
+  base_dir:              "results/"
+  experiment_naming:     "timestamp"
+  save_model_checkpoints: true
+  save_predictions:       true
+  save_logs:              true
+
+# ── Training hyperparameters ──────────────────────────────────────────
+# Adam is strongly recommended for V4 — handles tiny quantum gradients
+# SGD with high momentum can overshoot the kernel alignment landscape
+training:
+  epochs:         60
+  cv_epochs:      30
+  cv_folds:       5
+  use_cv:         false
+
+  # Optimizer — Adam for quantum models
+  optimizer:      "adam"
+  lr:             0.0003          # 3e-4: good for quantum + classical joint
+  weight_decay:   0.00001         # 1e-5: light regularisation
+
+  # Scheduler: cosine annealing matches paper
+  scheduler:      "cosine"
+  cosine_t_max:   10              # longer T_max for smoother decay
+
+  # Batch & workers
+  # NOTE: V4 computes O(batch_size²) kernel entries per step
+  # batch_size=16 → 256 kernel entries  (fast)
+  # batch_size=32 → 1024 kernel entries (recommended)
+  # batch_size=64 → 4096 kernel entries (slow, better kernel estimate)
+  batch_size:     16
+  num_workers:    4
+  shuffle:        true
+  debug:          false
+
+  # Early stopping
+  early_stopping_patience: 20
+  early_stopping_delta:    0.0
+
+  validation_metric: "loss"
+
+  # Prediction output directory
+  pred_root: "results/predictions/"
+
+  # Resume from checkpoint (set path or leave null)
+  resume_path: null
+
+  # ── V4-specific: kernel alignment loss weight ─────────────────────
+  # Controls tradeoff: total_loss = MSE + kernel_loss_weight × AlignLoss
+  # 0.0 = pure MSE (no quantum alignment)
+  # 0.3 = recommended balance
+  # 1.0 = pure alignment (no direct prediction supervision)
+  kernel_loss_weight: 0.3
+
+# ── Cross-validation ──────────────────────────────────────────────────
+cross_validation:
+  folds:        5
+  type:         "kfold"
+  shuffle:      true
+  random_state: 42
+
+# ── Model settings ────────────────────────────────────────────────────
+model:
+  gene_filter:   250
+  aux_ratio:     0.0             # Disabled for V4 (KRR head is the bottleneck)
+  aux_weight:    0.0
+  pretrained:    true
+  finetuning:    "ft2"           # ft2 = last 2 backbone blocks trainable
+  total_genes:   null            # Auto-resolved from dataset at runtime
+
+  # ── Quantum kernel ──────────────────────────────────────────────────
+  n_qubits:          4           # 4 qubits: good gradient, 16-dim Hilbert space
+  n_layers:          2           # 2 variational layers
+  embedding_type:    "angle"     # angle | iqp | amplitude
+  q_device:          "default.qubit"
+  init_noise:        0.01        # near-zero anti-barren-plateau init
+
+  # ── Kernel alignment ────────────────────────────────────────────────
+  target_kernel_type:  "rbf"     # RBF kernel on gene expression vectors
+  rbf_sigma:           1.0
+  center_kernel:       true
+  kernel_loss_weight:  0.3
+
+  # ── KRR head ────────────────────────────────────────────────────────
+  ridge_lambda:  0.001
+  n_landmarks:   0
+  use_nystrom:   false
+
+  # ── Residual head ────────────────────────────────────────────────────
+  residual_correction:  true
+  residual_hidden_dim:  128
+  residual_dropout:     0.2
+
+  # ── Feature reducer ──────────────────────────────────────────────────
+  reduce_dim:      256
+  decode_dim:      256
+  reducer_dropout: 0.2
+
+  # ── Training phase ───────────────────────────────────────────────────
+  # 0 = classical warmup  (backbone + reducer, QNN frozen)
+  # 1 = quantum only      (only θ in quantum kernel trainable)
+  # 2 = joint fine-tune   (all parameters)
+  training_phase:  2
+
+# ── Model selection ───────────────────────────────────────────────────
+models:
+  active_model:   "qnn_gene_predictor_v4"
+  save_best_only: true
+
+# ── Preprocessing ─────────────────────────────────────────────────────
+preprocessing:
+  window_size:          299       # Paper default: 299
+  quality_threshold:    1000
+  sparsity_threshold:   0.10
+
+# ── Spatial processing ────────────────────────────────────────────────
+spatial:
+  patch_window_size: 299
+  patch_resolution:  224
+
+# ── Gene expression filtering ─────────────────────────────────────────
+gene_expression:
+  min_total_reads:       1000
+  min_expression_percent: 0.10
+  top_genes_to_predict:  250
+
+# ── Data split (documentation only — NOT read by pipeline code)
+# The authoritative field is data.test_patient above.
+split:
+  test_patients:
+    - "BC23209"       # documentation only — edit data.test_patient instead
+  validation_ratio: 0.2
+
+# ── Execution / device ────────────────────────────────────────────────
+execution:
+  seed:            0
+  gpu_enabled:     true
+  cuda_enabled:    true
+  mps_enabled:     true
+  max_image_pixels: 1000000000

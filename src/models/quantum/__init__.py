@@ -10,6 +10,7 @@ try:
     from .amplitude_embedding_qml import QuantumAmplitudeEmbeddingModel
     from .efficientnet_quantum_head import EfficientNetQuantumHead
     from .qnn_gene_predictor import QNNGenePredictor, QNNLayer, FeatureReducer, ClassicalDecoder
+    from .qnn_gene_predictor_v4 import QNNGenePredictorV4
     from .quantum_layers import (
         QuantumMeasurementLayer,
         QuantumFeatureEncoder,
@@ -31,6 +32,10 @@ except ImportError as e:
             raise ImportError("Quantum models require PennyLane installation: pip install pennylane")
 
     class QNNGenePredictor:
+        def __init__(self, *args, **kwargs):
+            raise ImportError("Quantum models require PennyLane installation: pip install pennylane")
+
+    class QNNGenePredictorV4:
         def __init__(self, *args, **kwargs):
             raise ImportError("Quantum models require PennyLane installation: pip install pennylane")
 
@@ -68,6 +73,7 @@ __all__ = [
     'QuantumAmplitudeEmbeddingModel',
     'EfficientNetQuantumHead',
     'QNNGenePredictor',
+    'QNNGenePredictorV4',
     'QNNLayer',
     'FeatureReducer',
     'ClassicalDecoder',
