@@ -1,0 +1,93 @@
+# ============================================================
+# Spatial Transcriptomics Pipeline Configuration
+# Updated to match reference paper parameters exactly
+# ============================================================
+
+pipeline:
+  download_data:   false
+  process_data:    false
+  train_model:     true
+  evaluate_model:  true
+  compare_results: false
+
+# ------------------------------------------------------------
+# Data paths
+# ------------------------------------------------------------
+data:
+  input_dir:           "data/input/"
+  stbc_dir:            "data/stbc/"
+  stained_dir:         "data/stained/"
+  count_raw_dir:       "data/processed/count_raw/"
+  count_filtered_dir:  "data/processed/count_filtered/"
+  train_counts_dir:    "data/train/counts/"
+  train_images_dir:    "data/train/images/"
+  test_counts_dir:     "data/test/counts/"
+  test_images_dir:     "data/test/images/"
+  test_patient:        "BC23450"
+
+# ------------------------------------------------------------
+# Preprocessing  (paper uses window=299, resize to 224)
+# ------------------------------------------------------------
+preprocessing:
+  window_size:          299      # Paper default: 299 (not 224)
+  quality_threshold:    1000
+  sparsity_threshold:   0.10
+
+# ------------------------------------------------------------
+# Model
+# ------------------------------------------------------------
+model:
+  gene_filter:   250
+  aux_ratio:     1.0
+  aux_weight:    1.0             # Paper: aux_weight = 1
+  pretrained:    true
+  finetuning:    "ftall"         # ftfc | ftconv | ftall | null
+  total_genes:   null            # Set automatically at runtime
+
+# ------------------------------------------------------------
+# Training  — SGD + CosineAnnealingLR matching paper exactly
+# ------------------------------------------------------------
+training:
+  epochs:          50
+  cv_epochs:       50            # Epochs per CV fold
+  cv_folds:        5             # Paper default: 5-fold CV
+  use_cv:          false         # Set true to run CV epoch selection
+
+  # Optimizer: SGD (paper default)
+  optimizer:       "sgd"
+  lr:              0.001         # Paper: 1e-3
+  momentum:        0.9           # Paper: 0.9
+  weight_decay:    0.000001      # Paper: 1e-6
+
+  # LR Scheduler: CosineAnnealingLR (paper default)
+  scheduler:       "cosine"
+  cosine_t_max:    5             # Paper: T_max=5
+
+  # Batch & workers
+  batch_size:      32            # Paper: 32
+  num_workers:     8             # Paper: 8
+
+  # Early stopping
+  early_stopping_patience:  20  # Paper's EarlyStopping default
+  early_stopping_delta:     0.0
+
+  # Validation metric to monitor
+  validation_metric: "loss"
+
+  # Output
+  pred_root: "results/predictions/"
+
+# ------------------------------------------------------------
+# Results
+# ------------------------------------------------------------
+results:
+  base_dir:          "results/"
+  experiment_naming: "timestamp"
+  save_best_only:    true
+
+# ------------------------------------------------------------
+# Models registry
+# ------------------------------------------------------------
+models:
+  active_model:  "classical_efficientnet"
+  save_best_only: true

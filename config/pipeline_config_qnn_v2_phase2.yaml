@@ -1,0 +1,221 @@
+# ============================================================
+# Pipeline Config — QNN Gene Predictor V2 — PHASE 2
+# Joint Fine-tuning  [v2 — tuned after 20260328 run analysis]
+# ============================================================
+#
+# WHAT PHASE 2 DOES:
+#   ALL parameters unfrozen, trained end-to-end at very small lr.
+#   Prevents catastrophic forgetting of Phase 0/1 learned weights.
+#
+# CHANGES vs original Phase 2 (based on 20260328 results):
+#   ⬇ epochs:      25  → 15  (best was epoch 11, overfit after that)
+#   ⬇ early_stop:  15  →  8  (val aCC collapsed after epoch 11)
+#   ⬆ weight_decay: 0.00001 → 0.0001 (large train/val gap → overfitting)
+#   ⬆ dropout:    0.3 → 0.5  (must match Phase 0/1 checkpoint)
+#   ⬆ n_layers:     2  →  3  (must match Phase 0/1 checkpoint)
+#   ⬆ finetuning: ftall kept — backbone fully unfrozen for joint tuning
+#   ✦ early_stopping_delta: 0.001  (only stop on real improvement)
+#
+# EXPECTED OUTCOME (with fixes):
+#   - Val loss: 1.22 → ~1.15 (better generalization from higher dropout)
+#   - Val aCC:  0.109 → ~0.15+ (less overfitting, stops before collapse)
+#
+# WHAT TRAINS (all unfrozen):
+#   ✅ backbone           (EfficientNet-B4 — all layers)
+#   ✅ feature_reducer    (1792 → 256 → 4)
+#   ✅ qnn_layer.weights  (36 quantum params from Phase 1 state)
+#   ✅ decoder            (4 → 512 → 512)
+#   ✅ main_head          (512 → 250)
+#
+# PREREQUISITE:
+#   Complete Phase 1 first. Set resume_path to Phase 1 best model.
+#   Look in: results/<phase1_experiment_id>/models/qnn_gene_predictor_v2_best.pth
+#
+# RUN COMMAND:
+#   python src/main.py \
+#     --config config/pipeline_config_qnn_v2_phase2.yaml \
+#     --mode train
+#
+# EVALUATION after Phase 2:
+#   python src/main.py \
+#     --config config/pipeline_config_qnn_v2_phase2.yaml \
+#     --mode evaluate \
+#     --resume results/<phase2_exp>/models/qnn_gene_predictor_v2_best.pth
+# ============================================================
+
+# ── Pipeline steps ────────────────────────────────────────────────────────────
+pipeline:
+  download_data:  false
+  data_loader:    "spatial_downloader"
+
+  process_data: false
+  processing_steps:
+    - name: "spatial_file_organizer"
+      enabled: true
+    - name: "spatial_gene_processor"
+      enabled: true
+    - name: "spatial_stain_normalizer"
+      enabled: true
+    - name: "spatial_patch_extractor"
+      enabled: true
+
+  train_model:     true
+  evaluate_model:  true       # ✅ Run final evaluation after training
+  compare_results: false
+
+# ── Data download ─────────────────────────────────────────────────────────────
+download:
+  url:         "https://data.mendeley.com/public-api/zip/29ntw7sh4r/download/5"
+  remove_zip:  true
+  chunk_size:  1024
+  max_retries: 3
+  timeout:     300
+
+# ── Data paths ────────────────────────────────────────────────────────────────
+data:
+  input_dir:          "data/input/"
+  processed_dir:      "data/processed/"
+  train_dir:          "data/train/"
+  test_dir:           "data/test/"
+  metadata_file:      "metadata.csv"
+  verify_ssl:         false
+
+  stbc_dir:           "data/stbc/"
+  raw_dir:            "data/raw/"
+  organized_dir:      "data/organized/"
+  count_filtered_dir: "data/processed/count_filtered/"
+  stained_dir:        "data/stained/"
+  train_counts_dir:   "data/train/counts/"
+  train_images_dir:   "data/train/images/"
+  test_counts_dir:    "data/test/counts/"
+  test_images_dir:    "data/test/images/"
+
+  # ── Test patient split ────────────────────────────────────────────────────
+  # THIS IS THE AUTHORITATIVE FIELD — all code reads data.test_patient
+  # (data_generator.py, supervised_trainer.py, spatial_patch_extractor.py)
+  #
+  # The patient listed here is held out ENTIRELY from training:
+  #   • Its patches come from data/test/counts/ and data/test/images/
+  #   • All remaining patients from data/train/ become the training set
+  #   • Normalization stats (image mean/std, gene mean/std) are computed
+  #     on training patients ONLY — test patient never seen during stats
+  #
+  # To change the test patient, edit ONLY this field.
+  # Do NOT edit split.test_patients below — that section is not read by code.
+  test_patient: "BC23209"
+
+# ── Results ───────────────────────────────────────────────────────────────────
+results:
+  base_dir:               "results/"
+  experiment_naming:      "timestamp"
+  save_model_checkpoints: true
+  save_predictions:       true
+  save_logs:              true
+
+# ── Training — Phase 2: Joint Fine-tuning ────────────────────────────────────
+training:
+  epochs:    15             # ⬇ was 25 — best was epoch 11 on 20260328, stop at 15
+  cv_epochs: 10
+  cv_folds:  5
+  use_cv:    false
+
+  optimizer:     "adam"
+  lr:            0.00005    # ⚠️ VERY SMALL — prevents destroying Phase 0/1 weights
+  learning_rate: 0.00005
+  momentum:      0.9        # Unused by Adam
+  weight_decay:  0.0001     # ⬆ was 0.00001 — essential for generalization
+
+  scheduler:    "cosine"
+  cosine_t_max: 5
+
+  batch_size:   8
+  num_workers:  4
+  shuffle:      true
+  debug:        false
+
+  early_stopping_patience: 8    # ⬇ was 15 — val aCC collapsed after epoch 11
+  early_stopping_delta:    0.001 # Only stop on real improvement
+
+  validation_metric: "loss"
+  pred_root:         "results/predictions/"
+
+  # ⚠️  SET THIS to your Phase 1 best model path before running
+  # Example: "results/experiment_YYYYMMDD_HHMMSS/YYYYMMDD_HHMMSS/models/qnn_gene_predictor_v2_best.pth"
+  resume_path: "results/experiment_20260401_012820/20260401_012820/models/qnn_gene_predictor_v2_final.pth"         # ← REQUIRED: paste Phase 1 best model path here
+
+# ── Cross-validation ──────────────────────────────────────────────────────────
+cross_validation:
+  folds:        5
+  type:         "kfold"
+  shuffle:      true
+  random_state: 42
+
+# ── Model settings — Phase 2 ─────────────────────────────────────────────────
+model:
+  gene_filter:  250
+  aux_ratio:    0.0
+  aux_weight:   0.0
+  pretrained:   true
+  finetuning:   "ftall"     # ALL backbone layers unfrozen for joint fine-tuning
+
+  # ── QNN circuit (MUST be identical across all 3 phases) ──────────────────
+  n_qubits:        4        # Must match Phase 0/1
+  n_layers:        3        # Must match Phase 0/1 checkpoint
+  reduce_dim:      256      # Must match Phase 0/1
+  decode_dim:      512      # Must match Phase 0/1
+  reducer_dropout: 0.5      # Must match Phase 0/1 checkpoint
+  decoder_dropout: 0.5      # Must match Phase 0/1 checkpoint
+  q_device:        "auto"
+  init_noise:      0.01     # Irrelevant — weights loaded from Phase 1
+
+  # Phase 2: backbone unfrozen — full end-to-end gradient flows.
+  # Local loss not needed; main MSE loss reaches QNN naturally.
+  local_quantum_loss: false
+  local_loss_weight:  0.1
+
+  training_phase: 2         # 2 = Joint fine-tuning
+
+  total_genes: null         # Set automatically from dataset at runtime
+
+# ── Active model ──────────────────────────────────────────────────────────────
+models:
+  active_model:   "qnn_gene_predictor_v2"
+  model_config:   "qnn_gene_predictor_v2"
+  save_best_only: true
+
+# ── Data split — HOW IT ACTUALLY WORKS ──────────────────────────────────────
+# The train/test split is driven entirely by data.test_patient above.
+# The 'split.test_patients' list below is NOT read by any code.
+# It is kept only for documentation. Edit data.test_patient to change the split.
+split:
+  # For reference only — NOT read by code. Edit data.test_patient instead.
+  test_patients:
+    - "BC23450"       # Currently held-out patient
+  # Remaining ~22 patients become training patients automatically:
+  # BC23209, BC23268, BC23269, BC23270, BC23272, BC23277, BC23287, BC23288,
+  # BC23377, BC23506, BC23508, BC23567, BC23803, BC23810, BC23895, BC23901,
+  # BC23903, BC23944, BC24044, BC24105, BC24220, BC24223
+
+# ── Gene filtering ────────────────────────────────────────────────────────────
+gene_expression:
+  min_total_reads:        1000
+  min_expression_percent: 0.10
+  top_genes_to_predict:   250
+
+# ── Preprocessing ─────────────────────────────────────────────────────────────
+preprocessing:
+  window_size:        299
+  quality_threshold:  1000
+  sparsity_threshold: 0.10
+
+spatial:
+  patch_window_size: 299
+  patch_resolution:  224
+
+# ── Execution ─────────────────────────────────────────────────────────────────
+execution:
+  seed:             42
+  gpu_enabled:      true
+  cuda_enabled:     true
+  mps_enabled:      true
+  max_image_pixels: 1000000000

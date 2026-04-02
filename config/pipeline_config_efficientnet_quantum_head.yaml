@@ -1,0 +1,174 @@
+# ============================================================
+# Pipeline Configuration — EfficientNet Quantum Head
+# ============================================================
+# Model   : EfficientNet-B4 → ClassicalToQuantumBridge(1792→4×16)
+#           → QuantumHead (16q × 4L re-uploading, ring CNOT)
+#           → QuantumExpansionHead(16→256) → gene prediction heads
+# Hardware : MPS / CUDA / CPU (quantum circuit always on CPU via PennyLane)
+#
+# This model uses 16 qubits and 4 re-uploading layers.
+# It is significantly slower than qnn_gene_predictor:
+#   parameter-shift evals per step = 2 × n_qubits × n_layers × 3
+#                                  = 2 × 16 × 4 × 3 = 384
+# Strongly recommend batch_size=4 and frozen backbone to start.
+#
+# Usage:
+#   python src/main.py \
+#     --config config/pipeline_config_efficientnet_quantum_head.yaml \
+#     --mode train
+#   Resume:
+#   python src/main.py \
+#     --config config/pipeline_config_efficientnet_quantum_head.yaml \
+#     --mode train \
+#     --resume results/<experiment_id>/models/efficientnet_quantum_head_best.pth
+# ============================================================
+
+# ── Pipeline steps ───────────────────────────────────────────────────────────
+pipeline:
+  download_data:  false
+  data_loader:    "spatial_downloader"
+
+  process_data: false
+  processing_steps:
+    - name: "spatial_file_organizer"
+      enabled: true
+    - name: "spatial_gene_processor"
+      enabled: true
+    - name: "spatial_stain_normalizer"
+      enabled: true
+    - name: "spatial_patch_extractor"
+      enabled: true
+
+  train_model:    true
+  evaluate_model: true
+  compare_results: false
+
+# ── Data download ─────────────────────────────────────────────────────────────
+download:
+  url:        "https://data.mendeley.com/public-api/zip/29ntw7sh4r/download/5"
+  remove_zip: true
+  chunk_size: 1024
+  max_retries: 3
+  timeout:    300
+
+# ── Data paths ────────────────────────────────────────────────────────────────
+data:
+  input_dir:          "data/input/"
+  processed_dir:      "data/processed/"
+  train_dir:          "data/train/"
+  test_dir:           "data/test/"
+  metadata_file:      "metadata.csv"
+  verify_ssl:         false
+
+  stbc_dir:           "data/stbc/"
+  raw_dir:            "data/raw/"
+  organized_dir:      "data/organized/"
+  count_filtered_dir: "data/processed/count_filtered/"
+  stained_dir:        "data/stained/"
+  train_counts_dir:   "data/train/counts/"
+  train_images_dir:   "data/train/images/"
+  test_counts_dir:    "data/test/counts/"
+  test_images_dir:    "data/test/images/"
+
+  test_patient: "BC23450"
+
+# ── Results ───────────────────────────────────────────────────────────────────
+results:
+  base_dir:              "results/"
+  experiment_naming:     "timestamp"
+  save_model_checkpoints: true
+  save_predictions:      true
+  save_logs:             true
+
+# ── Training ─────────────────────────────────────────────────────────────────
+# This is the slowest quantum model (384 circuit evals per backward pass).
+# Use batch_size=4 to keep wall-clock time manageable.
+# Frozen backbone strongly recommended for initial training.
+training:
+  epochs:    15                # Fewer epochs — each epoch takes much longer
+  cv_epochs: 15
+  cv_folds:  5
+  use_cv:    false
+
+  optimizer:    "sgd"
+  lr:           0.0005         # Lower lr — 16-qubit circuit is sensitive
+  learning_rate: 0.0005
+  momentum:     0.9
+  weight_decay: 0.000001
+
+  scheduler:    "cosine"
+  cosine_t_max: 5
+
+  # IMPORTANT: smallest batch size — 16 qubits × 4 layers = 384 evals per step
+  # batch_size=4 → 4 × 384 = 1536 circuit calls per training iteration
+  batch_size:   4
+  num_workers:  2              # Fewer workers — very CPU-bound
+  shuffle:      true
+  debug:        false
+
+  early_stopping_patience: 8   # Short patience — training is slow, stop early if stuck
+  early_stopping_delta:    0.0
+
+  validation_metric: "loss"
+  pred_root:         "results/predictions/"
+  resume_path:       null      # Set to checkpoint path to resume training
+
+# ── Cross-validation ──────────────────────────────────────────────────────────
+cross_validation:
+  folds:        5
+  type:         "kfold"
+  shuffle:      true
+  random_state: 42
+
+# ── Model settings ────────────────────────────────────────────────────────────
+model:
+  gene_filter:   250
+  aux_ratio:     0.0           # No aux head — focus on main task first given slow training
+  aux_weight:    0.0
+  pretrained:    true
+  finetuning:    "frozen"      # STRONGLY recommended: freeze backbone for 16-qubit model
+                               # Full fine-tune would be prohibitively slow
+  total_genes:   null
+
+  # EfficientNetQuantumHead specific parameters
+  n_qubits:      16            # 16 qubits → 2^16 Hilbert space
+  n_layers:      4             # 4 re-uploading layers with ring CNOT
+  expansion_dim: 256           # QuantumExpansionHead: 16 → 256 (breaks rank bottleneck)
+  bridge_dropout: 0.1          # Dropout in ClassicalToQuantumBridge
+  head_dropout:   0.1          # Dropout in QuantumExpansionHead
+  q_device:       "default.qubit"  # PennyLane device
+
+# ── Active model ──────────────────────────────────────────────────────────────
+models:
+  active_model: "efficientnet_quantum_head"
+  save_best_only: true
+
+# ── Data split ────────────────────────────────────────────────────────────────
+split:
+  test_patients:
+    - "BC23450"
+  validation_ratio: 0.2
+
+# ── Gene filtering ────────────────────────────────────────────────────────────
+gene_expression:
+  min_total_reads:        1000
+  min_expression_percent: 0.10
+  top_genes_to_predict:   250
+
+# ── Preprocessing ─────────────────────────────────────────────────────────────
+preprocessing:
+  window_size:        299
+  quality_threshold:  1000
+  sparsity_threshold: 0.10
+
+spatial:
+  patch_window_size: 299
+  patch_resolution:  224
+
+# ── Execution ─────────────────────────────────────────────────────────────────
+execution:
+  seed:             42
+  gpu_enabled:      true
+  cuda_enabled:     true
+  mps_enabled:      true
+  max_image_pixels: 1000000000

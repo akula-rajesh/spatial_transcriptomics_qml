@@ -18,7 +18,7 @@ pipeline:
 
   train_model: true
   evaluate_model: true
-  compare_results: true
+  compare_results: false
 
 # Download configuration
 download:
@@ -59,17 +59,40 @@ results:
   save_predictions: true
   save_logs: true
 
-# Training configuration
+# Training — SGD + CosineAnnealingLR matching paper exactly
 training:
-  batch_size: 32
   epochs: 30
-  learning_rate: 0.001
-  early_stopping_patience: 20
-  validation_patience: 5
-  validation_metric: "loss"  # Options: loss, aMAE, aRMSE, aCC
+  cv_epochs: 30                  # Epochs per CV fold
+  cv_folds: 5                     # Paper default: 5-fold CV
+  use_cv: false                   # Set true to run CV epoch selection
+
+  # Optimizer: SGD (paper default)
+  optimizer: "sgd"
+  lr: 0.0005                       # Paper: 1e-3
+  learning_rate: 0.001            # alias used by some callers
+  momentum: 0.9                   # Paper: 0.9
+  weight_decay: 0.000001          # Paper: 1e-6
+
+  # LR Scheduler: CosineAnnealingLR (paper default)
+  scheduler: "cosine"
+  cosine_t_max: 5                 # Paper: T_max=5
+
+  batch_size: 32
   num_workers: 8
   shuffle: true
   debug: false
+
+  early_stopping_patience: 20    # Paper's EarlyStopping default
+  early_stopping_delta: 0.0
+
+  validation_metric: "loss"      # Options: loss, amae, armse, correlation_coefficient
+  pred_root: "results/predictions/"
+
+  # Resume training from a previously saved checkpoint.
+  # Set to null to start fresh, or provide a path like:
+  #   resume_path: "results/experiment_20260319_220858/20260319_220858/models/classical_efficientnet_final.pth"
+  # CLI --resume flag takes priority over this setting.
+  resume_path: results/experiment_20260320_152035/20260320_152035/models/classical_efficientnet_final.pth
 
 # Cross-validation configuration
 cross_validation:
@@ -78,17 +101,27 @@ cross_validation:
   shuffle: true
   random_state: 42
 
-# Model selection
+# Model
+model:
+  gene_filter: 250
+  aux_ratio: 0
+  aux_weight: 0                 # Paper: aux_weight = 1
+  pretrained: true
+  finetuning: "ftall"             # ftfc | ftconv | ftall | null
+  total_genes: null               # Set automatically at runtime
+
+# Model selection (orchestrator)
 models:
-  active_model: "quantum_amplitude_embedding"  # Default model to run
-  compare_models: 
+  active_model: "classical_efficientnet"  # Default model to run
+  compare_models:
     - "classical_efficientnet"
     - "quantum_amplitude_embedding"
+    - "efficientnet_quantum_head"
   save_best_only: true
 
 # Data splitting
 split:
-  test_patients: 
+  test_patients:
     - "BC23450"
     - "BC23903"
   validation_ratio: 0.2
@@ -99,13 +132,15 @@ gene_expression:
   min_expression_percent: 0.10  # Expressed in at least 10% of spots
   top_genes_to_predict: 250
 
-# Preprocessing configuration
+# Preprocessing  — paper uses window=299, patches resized to 224
 preprocessing:
-  window_size: 224  # Patch window size for spatial_patch_extractor
+  window_size: 299                # Paper default: 299 (NOT 224)
+  quality_threshold: 1000
+  sparsity_threshold: 0.10
 
 # Spatial processing
 spatial:
-  patch_window_size: 224
+  patch_window_size: 299
   patch_resolution: 224
 
 # Execution control

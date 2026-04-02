@@ -1,28 +1,33 @@
-# Quantum Amplitude Embedding model configuration
+# EfficientNet + Quantum Head model configuration
 # ─────────────────────────────────────────────────────────────────────────────
 # Architecture:
 #   Image (B,3,224,224) ← patches extracted at window=299, resized to 224×224
 #     → EfficientNet-B4 backbone  → (B, 1792)
-#     → pre_quantum: Linear+Tanh  → (B, 2^n_qubits)   e.g. n_qubits=3 → (B,8)
-#     → Quantum circuit (VQC)     → (B, n_qubits)      Pauli-Z in [-1,1]
+#     → bridge: Linear+LayerNorm+Tanh → (B, n_qubits)   angles in [-1, 1]
+#     → QuantumHead (VQC)         → (B, n_qubits)        Pauli-Z in [-1, 1]
 #     → main_head: Linear         → (B, gene_filter)
+#     → aux_head:  Linear         → (B, aux_nums)   [optional]
 #
 # Image preprocessing alignment:
 #   patch window : 299×299   (controlled by pipeline_config.yaml preprocessing.window_size)
 #   model input  : 224×224   (resized in SpatialDataset.__getitem__ before transform)
 #   EfficientNet-B4 expects 224×224 — alignment is CORRECT.
-# ────────────────────────────────────────────────────���────────────────────────
+#
+# To use this model set in pipeline_config.yaml:
+#   models:
+#     active_model: "efficientnet_quantum_head"
+# ─────────────────────────────────────────────────────────────────────────────
 
-# ── Keys read by QuantumAmplitudeEmbeddingModel.__init__ ──────────────────────
+# ── Keys read by EfficientNetQuantumHead.__init__ ────────────────────────────
 # The model reads from config top-level OR config['model'] sub-dict.
 # Top-level keys take priority.
 model:
-  name: "quantum_amplitude_embedding"
-  type: "quantum"
+  name: "efficientnet_quantum_head"
+  type: "hybrid_quantum"
 
   # Gene prediction
   gene_filter: 250          # Main head output (top-N genes by mean expression)
-  aux_ratio: 0.0            # Set > 0 to enable auxiliary gene head
+  aux_ratio: 0.0            # Set > 0 to enable auxiliary gene head (e.g. 1.0)
   aux_weight: 0.0           # Loss weight for auxiliary task
 
   # Backbone
@@ -30,16 +35,16 @@ model:
   finetuning: "ftall"       # Options: ftall | ft1 | ft2 | frozen
 
   # Quantum circuit — read directly by __init__
-  n_qubits: 3               # Number of qubits
-                            #   Circuit input dim  = 2^n_qubits  (e.g. 3→8, 4→16)
-                            #   Circuit output dim = n_qubits    (Pauli-Z per qubit)
-                            #   Keep small (3-5): PennyLane simulation is O(2^n) memory
+  n_qubits: 4               # Number of qubits — also the quantum output dimension
+                            #   Bridge maps 1792 → n_qubits angles
+                            #   Circuit output = n_qubits Pauli-Z values
+                            #   Keep small (3-6): PennyLane simulation is O(2^n) memory
   n_layers: 2               # VQC depth — StronglyEntanglingLayers count
                             #   Weight shape = (n_layers, n_qubits, 3)
-                            #   3 is FIXED by PennyLane (Rx,Ry,Rz per qubit)
+                            #   3 is FIXED by PennyLane (Rx, Ry, Rz per qubit)
   q_device: "default.qubit" # PennyLane device
                             #   Options: default.qubit      (CPU exact sim)
-                            #            lightning.qubit    (fast CPU sim, pip install pennylane-lightning)
+                            #            lightning.qubit    (fast CPU sim)
                             #            default.mixed      (noisy simulation)
 
   total_genes: null         # Set automatically at runtime from dataset
@@ -54,4 +59,3 @@ input:
 backbone:
   name: "efficientnet-b4"
   feature_dim: 1792         # Output of EfficientNet-B4 avgpool layer
-  pre_quantum_dim: null     # Computed at runtime: 2^n_qubits

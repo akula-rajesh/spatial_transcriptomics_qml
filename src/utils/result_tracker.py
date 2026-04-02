@@ -155,21 +155,149 @@ class ResultTracker:
         except Exception as e:
             logger.error(f"Failed to save model: {str(e)}")
             
-    def save_results(self) -> None:
-        """Save all tracked results."""
+    def save_results(self, pipeline_results: Optional[Dict[str, Any]] = None) -> None:
+        """
+        Save all tracked results.
+
+        Args:
+            pipeline_results: Optional full pipeline results dict to include in results.json
+        """
         try:
-            # Save metrics
+            # 1. Save metrics.json — raw per-step metric log
             with open(self.metrics_file, 'w') as f:
                 json.dump(dict(self.metrics), f, indent=2, default=str)
-                
-            # Save metadata
+
+            # 2. Save metadata.json
             with open(self.metadata_file, 'w') as f:
                 json.dump(self.metadata, f, indent=2, default=str)
-                
-            logger.info("Results saved successfully")
+
+            # 3. Build and save results.json — comprehensive summary for visualisation
+            results_json = self._build_results_json(pipeline_results)
+            results_file = self.run_dir / "results.json"
+            with open(results_file, 'w') as f:
+                json.dump(results_json, f, indent=2, default=str)
+
+            logger.info(f"Results saved to {self.run_dir}")
+            logger.info(f"  metrics.json  → {self.metrics_file}")
+            logger.info(f"  results.json  → {results_file}")
+            logger.info(f"  metadata.json → {self.metadata_file}")
+
         except Exception as e:
             logger.error(f"Failed to save results: {str(e)}")
-            
+
+    def _build_results_json(self, pipeline_results: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Build a comprehensive results.json dict suitable for visualisation.
+
+        Structure:
+          {
+            experiment_name, timestamp, status,
+            training: { <model_name>: { epochs, losses, metrics, best_epoch, ... } },
+            evaluation: { <model_name>: { loss, amae, armse, acc, ... } },
+            metrics_summary: { <metric_name>: { last, min, max, mean } }
+          }
+        """
+        results = {
+            'experiment_name': self.experiment_name,
+            'timestamp': self.timestamp,
+            'status': self.metadata.get('status', 'unknown'),
+            'run_dir': str(self.run_dir),
+        }
+
+        # ── Training history ──────────────────────────────────────────
+        training_section: Dict[str, Any] = {}
+
+        # Pull from pipeline_results if provided
+        if pipeline_results and 'training' in pipeline_results:
+            for model_name, model_res in pipeline_results['training'].items():
+                if not isinstance(model_res, dict):
+                    continue
+                training_section[model_name] = {
+                    'best_epoch':      model_res.get('best_epoch', model_res.get('final_epoch', 0)),
+                    'best_val_loss':   model_res.get('best_val_loss', None),
+                    'best_val_metric': model_res.get('best_val_metric', None),
+                    'training_time_s': model_res.get('training_time', None),
+                    'total_epochs':    len(model_res.get('train_losses', [])),
+                    # Per-epoch arrays (safe for JSON — plain lists of floats)
+                    'train_losses':    [float(v) for v in model_res.get('train_losses', [])],
+                    'val_losses':      [float(v) for v in model_res.get('val_losses', [])],
+                    # Per-epoch metric dicts
+                    'train_metrics':   self._sanitise_metric_history(model_res.get('train_metrics', [])),
+                    'val_metrics':     self._sanitise_metric_history(model_res.get('val_metrics', [])),
+                }
+
+        # Also rebuild from the metrics log (works even when pipeline_results is None)
+        if not training_section:
+            training_section = self._rebuild_training_from_metrics()
+
+        if training_section:
+            results['training'] = training_section
+
+        # ── Evaluation results ────────────────────────────────────────
+        if pipeline_results and 'evaluation' in pipeline_results:
+            eval_section: Dict[str, Any] = {}
+            for model_name, eval_res in pipeline_results['evaluation'].items():
+                if isinstance(eval_res, dict):
+                    eval_section[model_name] = {
+                        'loss':                    eval_res.get('loss', None),
+                        'metrics':                 eval_res.get('metrics', {}),
+                    }
+            if eval_section:
+                results['evaluation'] = eval_section
+
+        # ── Flat metrics summary (last / min / max / mean per metric) ─
+        summary: Dict[str, Any] = {}
+        for name, entries in self.metrics.items():
+            numeric = [e['value'] for e in entries
+                       if isinstance(e.get('value'), (int, float)) and not np.isnan(e['value'])]
+            if numeric:
+                summary[name] = {
+                    'last':  numeric[-1],
+                    'min':   float(np.min(numeric)),
+                    'max':   float(np.max(numeric)),
+                    'mean':  float(np.mean(numeric)),
+                    'count': len(numeric),
+                }
+        if summary:
+            results['metrics_summary'] = summary
+
+        return results
+
+    @staticmethod
+    def _sanitise_metric_history(history: list) -> list:
+        """Convert list of metric dicts to JSON-safe list of plain dicts."""
+        out = []
+        for item in history:
+            if isinstance(item, dict):
+                out.append({k: float(v) if isinstance(v, (int, float, np.floating)) else v
+                             for k, v in item.items()})
+        return out
+
+    def _rebuild_training_from_metrics(self) -> Dict[str, Any]:
+        """
+        Rebuild per-model training history from self.metrics when
+        pipeline_results is not available (e.g. called after failure).
+        """
+        training: Dict[str, Any] = {}
+        for key, entries in self.metrics.items():
+            # Keys look like  "classical_efficientnet_train_loss"
+            parts = key.split('_')
+            if len(parts) < 3:
+                continue
+            # Find the split between model name and metric name
+            for split in range(1, len(parts)):
+                suffix = '_'.join(parts[split:])
+                if suffix in ('train_loss', 'val_loss', 'train_amae', 'val_amae',
+                              'val_armse', 'train_armse', 'val_correlation_coefficient',
+                              'best_val_loss', 'training_time'):
+                    model_name = '_'.join(parts[:split])
+                    if model_name not in training:
+                        training[model_name] = {}
+                    step_values = sorted(entries, key=lambda e: e.get('step', 0))
+                    training[model_name][suffix] = [float(e['value']) for e in step_values]
+                    break
+        return training
+
     def save_plots(self, plot_types: Optional[List[str]] = None) -> None:
         """
         Save plots of tracked metrics.

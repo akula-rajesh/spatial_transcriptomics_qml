@@ -1,0 +1,187 @@
+# ============================================================
+# Pipeline Configuration — QNN Gene Predictor
+# ============================================================
+# Model   : EfficientNet-B4 → FeatureReducer → QNNLayer (PennyLane)
+#           → ClassicalDecoder → gene prediction heads
+# Hardware : MPS (Apple Silicon) / CUDA / CPU
+#           Note: quantum circuit (PennyLane) always runs on CPU internally.
+#           Backbone and heads use MPS/CUDA. Both work transparently.
+#
+# Training strategy (2-phase recommended):
+#   Phase 1 — backbone frozen, only QNN + heads train (15-20 epochs)
+#     finetuning: "frozen"  ← set in model_configs/qnn_gene_predictor.yaml
+#   Phase 2 — full fine-tune from Phase 1 checkpoint
+#     finetuning: "ftall" + resume_path: <phase1_checkpoint>
+#
+# Usage:
+#   Phase 1:
+#     python src/main.py --config config/pipeline_config_qnn_gene_predictor.yaml --mode train
+#   Phase 2:
+#     python src/main.py --config config/pipeline_config_qnn_gene_predictor.yaml --mode train \
+#            --resume results/<experiment_id>/models/qnn_gene_predictor_best.pth
+# ============================================================
+
+# ── Pipeline steps ───────────────────────────────────────────────────────────
+pipeline:
+  download_data:  false
+  data_loader:    "spatial_downloader"
+
+  process_data: false
+  processing_steps:
+    - name: "spatial_file_organizer"
+      enabled: true
+    - name: "spatial_gene_processor"
+      enabled: true
+    - name: "spatial_stain_normalizer"
+      enabled: true
+    - name: "spatial_patch_extractor"
+      enabled: true
+
+  train_model:    true
+  evaluate_model: false
+  compare_results: false
+
+# ── Data download ─────────────────────────────────────────────────────────────
+download:
+  url:        "https://data.mendeley.com/public-api/zip/29ntw7sh4r/download/5"
+  remove_zip: true
+  chunk_size: 1024
+  max_retries: 3
+  timeout:    300
+
+# ── Data paths ────────────────────────────────────────────────────────────────
+data:
+  input_dir:          "data/input/"
+  processed_dir:      "data/processed/"
+  train_dir:          "data/train/"
+  test_dir:           "data/test/"
+  metadata_file:      "metadata.csv"
+  verify_ssl:         false
+
+  stbc_dir:           "data/stbc/"
+  raw_dir:            "data/raw/"
+  organized_dir:      "data/organized/"
+  count_filtered_dir: "data/processed/count_filtered/"
+  stained_dir:        "data/stained/"
+  train_counts_dir:   "data/train/counts/"
+  train_images_dir:   "data/train/images/"
+  test_counts_dir:    "data/test/counts/"
+  test_images_dir:    "data/test/images/"
+
+  test_patient: "BC23450"
+
+# ── Results ───────────────────────────────────────────────────────────────────
+results:
+  base_dir:              "results/"
+  experiment_naming:     "timestamp"
+  save_model_checkpoints: true
+  save_predictions:      true
+  save_logs:             true
+
+# ── Training ─────────────────────────────────────────────────────────────────
+# QNN-specific tuning:
+#   • Smaller batch_size (8) — parameter-shift needs 144 circuit evals per
+#     backward pass (2 × n_qubits=8 × n_layers=3 × 3 rotation params)
+#   • Lower lr (0.0005) — quantum circuits are sensitive to large updates
+#   • Fewer epochs (20) per phase — Phase 1 frozen, Phase 2 ftall
+#   • Early stopping patience 10 — QNN training can plateau quickly
+training:
+  epochs:    20                # Per phase — run Phase 1, then Phase 2 with resume
+  cv_epochs: 20
+  cv_folds:  5
+  use_cv:    false
+
+  # Optimizer — SGD works well for hybrid QML models
+  optimizer:    "sgd"
+  lr:           0.0005         # Lower than classical — quantum circuits are sensitive
+  learning_rate: 0.0005
+  momentum:     0.9
+  weight_decay: 0.000001
+
+  # Scheduler
+  scheduler:    "cosine"
+  cosine_t_max: 5
+
+  # DataLoader
+  # IMPORTANT: smaller batch_size for QML
+  # Each sample requires 144 PennyLane circuit executions for gradients.
+  # batch_size=8 means 8×144 = 1152 circuit evals per training step.
+  batch_size:   8
+  num_workers:  4              # Fewer workers — quantum circuit is CPU-bound
+  shuffle:      true
+  debug:        false
+
+  # Early stopping
+  early_stopping_patience: 10  # Shorter for QML — plateaus faster
+  early_stopping_delta:    0.0
+
+  validation_metric: "loss"
+  pred_root:         "results/predictions/"
+
+  # Resume — set path for Phase 2 fine-tuning
+  # Phase 1 (frozen): resume_path: null
+  # Phase 2 (ftall):  resume_path: "results/<exp_id>/models/qnn_gene_predictor_best.pth"
+  resume_path: "results/experiment_20260326_125133/20260326_125133/models/qnn_gene_predictor_final.pth"
+
+# ── Cross-validation ──────────────────────────────────────────────────────────
+cross_validation:
+  folds:        5
+  type:         "kfold"
+  shuffle:      true
+  random_state: 42
+
+# ── Model settings ────────────────────────────────────────────────────────────
+# These override values from model_configs/qnn_gene_predictor.yaml
+model:
+  gene_filter:  250
+  aux_ratio:    0.0            # No aux head — keep training simple for QML
+  aux_weight:   0.0
+  pretrained:   true
+  finetuning:   "frozen"       # Phase 1: freeze backbone. Change to "ftall" for Phase 2.
+  total_genes:  null           # Set automatically from dataset
+
+  # QNN-specific parameters (passed to QNNGenePredictor.__init__)
+  n_qubits:         8          # 8 qubits — sweet spot for speed vs expressibility
+  n_layers:         3          # 3 re-uploading layers — gives universal approximation
+  reduce_dim:       256        # FeatureReducer: 1792 → 256 → 8
+  decode_dim:       512        # ClassicalDecoder: 8 → 512 → 512 → 250
+  reducer_dropout:  0.2
+  decoder_dropout:  0.2
+  q_device:         "default.qubit"   # PennyLane device (always runs on CPU)
+                                       # lightning.qubit: faster if installed
+                                       # pip install pennylane-lightning
+
+# ── Active model ──────────────────────────────────────────────────────────────
+models:
+  active_model: "qnn_gene_predictor"
+  save_best_only: true
+
+# ── Data split ────────────────────────────────────────────────────────────────
+split:
+  test_patients:
+    - "BC23450"
+  validation_ratio: 0.2
+
+# ── Gene filtering ────────────────────────────────────────────────────────────
+gene_expression:
+  min_total_reads:        1000
+  min_expression_percent: 0.10
+  top_genes_to_predict:   250
+
+# ── Preprocessing — paper: window=299, resize to 224 ─────────────────────────
+preprocessing:
+  window_size:        299      # Extract 299×299 patches from WSI
+  quality_threshold:  1000
+  sparsity_threshold: 0.10
+
+spatial:
+  patch_window_size: 299
+  patch_resolution:  224       # Resized to 224×224 before EfficientNet backbone
+
+# ── Execution ─────────────────────────────────────────────────────────────────
+execution:
+  seed:             42         # Fixed seed for reproducibility in QML experiments
+  gpu_enabled:      true
+  cuda_enabled:     true       # Backbone + heads use CUDA/MPS
+  mps_enabled:      true       # Apple Metal (M1/M2/M3)
+  max_image_pixels: 1000000000

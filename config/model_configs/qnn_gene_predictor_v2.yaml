@@ -1,0 +1,104 @@
+# QNN Gene Predictor V2 — Model Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+# V2 fixes over V1:
+#   ✅ FIX #1: Gradient flow restored (QuantumFunction / lightning.qubit backprop)
+#   ✅ FIX #2: Near-zero weight init  → avoids barren plateau
+#   ✅ FIX #3: Adam optimizer support in pipeline config
+#   ✅ FIX #4: n_qubits=4 by default  → gradient ≈ 1/16 instead of 1/256
+#   ✅ FIX #5: 3-phase training support (training_phase: 0|1|2)
+#   ✅ FIX #6: Local quantum auxiliary loss (optional, PCA-based)
+#   ✅ FIX #7: Auto-uses lightning.qubit + backprop when available
+#
+# Architecture (identical to V1 except quantum internals):
+#   Image (B, 3, 224, 224)
+#     ① EfficientNet-B4 backbone   → (B, 1792)
+#     ② FeatureReducerV2 MLP       → (B, n_qubits)   compress + Tanh×π
+#     ③ QNNLayerV2 (PennyLane)     → (B, n_qubits)   quantum transform
+#                                                     near-zero init (anti-barren-plateau)
+#                                                     full gradient flow via QuantumFunction
+#                                                     or lightning.qubit backprop
+#     ④ ClassicalDecoderV2 MLP     → (B, decode_dim) expand (breaks rank cap)
+#     ⑤ main_head Linear           → (B, 250)        gene predictions
+#
+# Phase-based training (recommended):
+#   Phase 0 — Classical warmup (backbone+QNN frozen, heads/reducer train):
+#     training_phase: 0  →  5-10 epochs at lr=0.001 with Adam
+#   Phase 1 — Quantum training (everything except QNN frozen):
+#     training_phase: 1  →  10-15 epochs at lr=0.001 with Adam
+#   Phase 2 — Joint fine-tuning (all unlocked):
+#     training_phase: 2  →  15-30 epochs at lr=0.0001 with Adam
+#
+# Usage: set in pipeline_config_qnn_gene_predictor_v2.yaml:
+#   models:
+#     active_model: "qnn_gene_predictor_v2"
+#
+# To install lightning for faster training:
+#   pip install pennylane-lightning
+# ─────────────────────────────────────────────────────────────────────────────
+
+model:
+  name: "qnn_gene_predictor_v2"
+  type: "quantum"
+
+  # ── Gene prediction ──────────────────────────────────────────────────
+  gene_filter: 250          # Top-N genes to predict (main head output)
+  aux_ratio:   0.0          # Start with 0 — keep training simple in V2
+                            # (aux head can be added after V2 baseline works)
+  aux_weight:  0.0
+
+  # ── Backbone ─────────────────────────────────────────────────────────
+  pretrained: true          # Load ImageNet weights for EfficientNet-B4
+  finetuning: "frozen"      # Start frozen — PhaseController manages unfreezing
+                            # Phase 0: QNN frozen, classical components train
+                            # Phase 2: set "ftall" to unfreeze backbone
+
+  # ── QNN circuit (V2 — key differences from V1) ───────────────────────
+  n_qubits: 4               # ✅ V2 default: 4 (was 8 in V1)
+                            #   n_qubits=4  → gradient ≈ 1/16   (manageable)
+                            #   n_qubits=8  → gradient ≈ 1/256  (barren plateau)
+                            #   Increase to 8 ONLY after confirming V2 trains well
+  n_layers: 2               # ✅ V2 default: 2 (was 3 in V1)
+                            #   Fewer layers = fewer parameters = larger gradients
+                            #   Quantum weight count: n_layers × n_qubits × 3 = 24 params
+  q_device: "auto"          # ✅ V2: "auto" = use lightning.qubit if available, else default.qubit
+                            #   "auto"          → best available (recommended)
+                            #   "lightning.qubit" → fast CPU, backprop gradients (pip install pennylane-lightning)
+                            #   "default.qubit"   → exact simulation, QuantumFunction gradients
+                            #   "classical_fallback" → forces tanh (no PennyLane needed, for debugging)
+  init_noise: 0.01          # ✅ V2: Near-zero initialization noise (was uniform[-π,π] in V1)
+                            #   Near-identity circuit → gradients are O(1) at start
+                            #   This is the key fix for barren plateau
+
+  # ── Feature reducer (1792 → n_qubits) ────────────────────────────────
+  reduce_dim:      256      # Intermediate MLP: 1792 → 256 → n_qubits
+  reducer_dropout: 0.3      # Slightly higher dropout than V1 (0.2) for regularization
+
+  # ── Classical decoder (n_qubits → decode_dim) ─────────────────────────
+  decode_dim:      512      # Decoder output → gene head input
+                            # With decode_dim=512: Linear(512→250) has full rank
+  decoder_dropout: 0.3
+
+  # ── Local quantum loss (FIX #6 — optional but recommended) ───────────
+  local_quantum_loss: false # Set true to add PCA-projected supervision on quantum output
+                            # Provides direct learning signal to quantum circuit
+                            # Reduces barren plateau effect during Phase 1 training
+  local_loss_weight: 0.1   # Weight for local quantum loss: total = main + 0.1 * local
+
+  # ── Training phase (FIX #5) ──────────────────────────────────────────
+  training_phase: 0         # 0 = Phase 0: classical warmup (QNN frozen)
+                            # 1 = Phase 1: quantum training (classical frozen)
+                            # 2 = Phase 2: joint fine-tuning (all trainable)
+                            # Override per-run in pipeline config or via --resume
+
+  total_genes: null         # Set automatically at runtime from dataset
+
+# ── Image input ──────────────────────────────────────────────────────────
+input:
+  patch_window_size: 299    # Raw patch size
+  model_input_size:  224    # Resized to 224×224 by SpatialDataset
+  channels:          3
+
+# ── Backbone ──────────────────────────────────────────────────────────────
+backbone:
+  name:        "efficientnet-b4"
+  feature_dim: 1792

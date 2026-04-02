@@ -6,7 +6,7 @@ spatial gene expression from histology images.
 """
 
 # Import classical model components
-from .efficientnet_model import EfficientNetModel, EfficientNet
+from .efficientnet_model import EfficientNetModel
 from .auxnet_model import AuxNetModel
 
 # Package metadata
@@ -18,6 +18,7 @@ __email__ = "research@spatial-transcriptomics.org"
 __all__ = [
     'EfficientNetModel',
     'EfficientNet',
+    'AuxNet',
     'AuxNetModel'
 ]
 

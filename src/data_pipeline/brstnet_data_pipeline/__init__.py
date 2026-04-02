@@ -23,5 +23,9 @@ import logging
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
-register_data_pipeline_factories()
-logger.info("Data pipeline package v%s initialized", __version__)
+try:
+    from src.data_pipeline.factory import register_data_pipeline_factories
+    register_data_pipeline_factories()
+    logger.info("Data pipeline package v%s initialized", __version__)
+except Exception as e:
+    logger.warning("Could not register data pipeline factories: %s", e)

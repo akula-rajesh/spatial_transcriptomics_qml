@@ -1,0 +1,166 @@
+# ============================================================
+# Pipeline Configuration — Classical EfficientNet-B4
+# ============================================================
+# Model   : EfficientNet-B4 + AuxNet dual-head
+# Hardware : MPS (Apple Silicon) / CUDA / CPU
+# Usage   :
+#   python src/main.py --config config/pipeline_config_classical_efficientnet.yaml --mode train
+# Resume  :
+#   python src/main.py --config config/pipeline_config_classical_efficientnet.yaml --mode train \
+#          --resume results/<experiment_id>/models/classical_efficientnet_best.pth
+# ============================================================
+
+# ── Pipeline steps ───────────────────────────────────────────────────────────
+pipeline:
+  download_data:  false
+  data_loader:    "spatial_downloader"
+
+  process_data: false
+  processing_steps:
+    - name: "spatial_file_organizer"
+      enabled: false
+    - name: "spatial_gene_processor"
+      enabled: false
+    - name: "spatial_stain_normalizer"
+      enabled: false
+    - name: "spatial_patch_extractor"
+      enabled: true
+
+  train_model:    true
+  evaluate_model: true
+  compare_results: false
+
+# ── Data download ─────────────────────────────────────────────────────────────
+download:
+  url:        "https://data.mendeley.com/public-api/zip/29ntw7sh4r/download/5"
+  remove_zip: true
+  chunk_size: 1024
+  max_retries: 3
+  timeout:    300
+
+# ── Data paths ────────────────────────────────────────────────────────────────
+data:
+  input_dir:          "data/input/"
+  processed_dir:      "data/processed/"
+  train_dir:          "data/train/"
+  test_dir:           "data/test/"
+  metadata_file:      "metadata.csv"
+  verify_ssl:         false
+
+  stbc_dir:           "data/stbc/"
+  raw_dir:            "data/raw/"
+  organized_dir:      "data/organized/"
+  count_filtered_dir: "data/processed/count_filtered/"
+  stained_dir:        "data/stained/"
+  train_counts_dir:   "data/train/counts/"
+  train_images_dir:   "data/train/images/"
+  test_counts_dir:    "data/test/counts/"
+  test_images_dir:    "data/test/images/"
+
+  test_patient:  "BC23209"  #"BC23450"
+
+# ── Results ───────────────────────────────────────────────────────────────────
+results:
+  base_dir:              "results/"
+  experiment_naming:     "timestamp"
+  save_model_checkpoints: true
+  save_predictions:      true
+  save_logs:             true
+
+# ── Training — SGD + CosineAnnealingLR (paper settings) ──────────────────────
+training:
+  epochs:    30
+  # NOTE: cv_epochs / cv_folds / use_cv are not connected to the real
+  # training loop. Per-epoch validation runs automatically using the
+  # test patient (data.test_patient) as the validation set every epoch.
+  # Early stopping monitors that validation loss.
+  cv_epochs: 30    # unused — run_cross_validation() is never called
+  cv_folds:  5     # unused — run_cross_validation() is never called
+  use_cv:    false # unused — no code reads this field
+
+  # Optimizer
+  optimizer:    "sgd"
+  lr:           0.001          # Paper: 1e-3
+  learning_rate: 0.001
+  momentum:     0.9            # Paper: 0.9
+  weight_decay: 0.000001       # Paper: 1e-6
+
+  # Scheduler
+  scheduler:    "cosine"
+  cosine_t_max: 5              # Paper: T_max=5
+
+  # DataLoader
+  batch_size:   32             # Paper: 32
+  num_workers:  8
+  shuffle:      true
+  debug:        false
+
+  # Early stopping
+  early_stopping_patience: 20
+  early_stopping_delta:    0.0
+
+  validation_metric: "loss"
+  pred_root:         "results/predictions/"
+
+  # Resume — set path to continue from checkpoint, null to start fresh
+  resume_path: "results/experiment_20260329_114347/20260329_114347/models/classical_efficientnet_final.pth"
+
+# ── Cross-validation ──────────────────────────────────────────────────────────
+# WARNING: cross_validator.py (which reads these fields) uses SYNTHETIC RANDOM
+# DATA — not real SpatialDataset. It is also never triggered from the pipeline.
+# The real patient-level CV is run_cross_validation() in supervised_trainer.py
+# but that function is also never called automatically. These fields are dead.
+cross_validation:
+  folds:        5
+  type:         "kfold"
+  shuffle:      true
+  random_state: 42
+
+# ── Model settings ────────────────────────────────────────────────────────────
+model:
+  gene_filter: 250
+  aux_ratio:   1.0             # Enable auxiliary head (paper default)
+  aux_weight:  1.0             # Equal weight for auxiliary loss
+  pretrained:  false
+  finetuning:  "ftall"         # Full fine-tuning — paper default
+  total_genes: null            # Set automatically from dataset
+
+# ── Active model ──────────────────────────────────────────────────────────────
+models:
+  active_model: "classical_efficientnet"
+  save_best_only: true
+
+# ── Data split ────────────────────────────────────────────────────────────────
+# HOW THE SPLIT ACTUALLY WORKS:
+#   data.test_patient above is the ONLY field that controls the train/test split.
+#   Training patients  = all patients in data/train/counts/ EXCEPT test_patient
+#   Validation per epoch = test patient data from data/test/ (NOT a random subset)
+#   validation_ratio below is NOT read by any code — kept for documentation only.
+split:
+  test_patients:
+    - "BC23450"       # documentation only — edit data.test_patient instead
+  validation_ratio: 0.2   # NOT read by any code
+
+# ── Gene filtering ────────────────────────────────────────────────────────────
+gene_expression:
+  min_total_reads:       1000
+  min_expression_percent: 0.10
+  top_genes_to_predict:  250
+
+# ── Preprocessing — paper: window=299, resize to 224 ─────────────────────────
+preprocessing:
+  window_size:         299     # Paper default: extract 299×299 patches
+  quality_threshold:   1000
+  sparsity_threshold:  0.10
+
+spatial:
+  patch_window_size: 299
+  patch_resolution:  224       # Resized to 224×224 before model input
+
+# ── Execution ─────────────────────────────────────────────────────────────────
+execution:
+  seed:             0
+  gpu_enabled:      true
+  cuda_enabled:     true       # NVIDIA CUDA
+  mps_enabled:      true       # Apple Metal (M1/M2/M3)
+  max_image_pixels: 1000000000

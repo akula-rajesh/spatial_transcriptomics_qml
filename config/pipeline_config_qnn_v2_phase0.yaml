@@ -1,0 +1,227 @@
+# ============================================================
+# Pipeline Config — QNN Gene Predictor V2 — PHASE 0
+# Classical Warmup  [v2 — tuned after 20260328 run analysis]
+# ============================================================
+#
+# WHAT PHASE 0 DOES:
+#   QNN weights are FROZEN. Only the classical parts learn:
+#     backbone last conv blocks (ftconv) + FeatureReducer + Decoder + main_head
+#   Purpose: teach classical components to produce a useful quantum-angle
+#   representation BEFORE the QNN itself is trained.
+#
+# CHANGES vs original Phase 0 (based on 20260328 results):
+#   ⬆ epochs:          10  → 20  (val aCC still rising at epoch 10)
+#   ⬆ weight_decay: 0.00001 → 0.0001 (train/val gap was huge → overfitting)
+#   ⬆ dropout:        0.3  → 0.5  (same overfitting diagnosis)
+#   ⬆ n_layers:         2  →  3  (36 quantum params, must match all phases)
+#   ⬆ finetuning:  frozen → ftconv (unfreeze last conv blocks for better features)
+#   ⬆ early_stopping: 10  → 15   (more patience to find true optimum)
+#
+# EXPECTED OUTCOME (with fixes):
+#   - Loss:  ~1.5 → ~0.75-0.85 by epoch 20
+#   - Val aCC: 0.10 → 0.15-0.20  (better than 0.138 from 20260328)
+#   - Train/val gap smaller due to higher regularization
+#
+# WHAT TRAINS:
+#   ✅ backbone last conv blocks (ftconv — unfreezes last 2 EfficientNet blocks)
+#   ✅ feature_reducer   (1792 → 256 → 4)
+#   ✅ decoder           (4 → 512 → 512)
+#   ✅ main_head         (512 → 250)
+#   ❌ qnn_layer.weights (frozen — near-zero init preserved for Phase 1)
+#
+# RUN COMMAND:
+#   python src/main.py \
+#     --config config/pipeline_config_qnn_v2_phase0.yaml \
+#     --mode train
+#
+# NEXT STEP:
+#   Copy the best model path from results/ into phase1 config resume_path.
+#   Look in: results/<experiment_id>/models/qnn_gene_predictor_v2_best.pth
+# ============================================================
+
+# ── Pipeline steps ────────────────────────────────────────────────────────────
+pipeline:
+  download_data:  false
+  data_loader:    "spatial_downloader"
+
+  process_data: false
+  processing_steps:
+    - name: "spatial_file_organizer"
+      enabled: true
+    - name: "spatial_gene_processor"
+      enabled: true
+    - name: "spatial_stain_normalizer"
+      enabled: true
+    - name: "spatial_patch_extractor"
+      enabled: true
+
+  train_model:     true
+  evaluate_model:  false
+  compare_results: false
+
+# ── Data download ─────────────────────────────────────────────────────────────
+download:
+  url:         "https://data.mendeley.com/public-api/zip/29ntw7sh4r/download/5"
+  remove_zip:  true
+  chunk_size:  1024
+  max_retries: 3
+  timeout:     300
+
+# ── Data paths ────────────────────────────────────────────────────────────────
+data:
+  input_dir:          "data/input/"
+  processed_dir:      "data/processed/"
+  train_dir:          "data/train/"
+  test_dir:           "data/test/"
+  metadata_file:      "metadata.csv"
+  verify_ssl:         false
+
+  stbc_dir:           "data/stbc/"
+  raw_dir:            "data/raw/"
+  organized_dir:      "data/organized/"
+  count_filtered_dir: "data/processed/count_filtered/"
+  stained_dir:        "data/stained/"
+  train_counts_dir:   "data/train/counts/"
+  train_images_dir:   "data/train/images/"
+  test_counts_dir:    "data/test/counts/"
+  test_images_dir:    "data/test/images/"
+
+  # ── Test patient split ────────────────────────────────────────────────────
+  # THIS IS THE AUTHORITATIVE FIELD — all code reads data.test_patient
+  # (data_generator.py, supervised_trainer.py, spatial_patch_extractor.py)
+  #
+  # The patient listed here is held out ENTIRELY from training:
+  #   • Its patches come from data/test/counts/ and data/test/images/
+  #   • All remaining patients from data/train/ become the training set
+  #   • Normalization stats (image mean/std, gene mean/std) are computed
+  #     on training patients ONLY — test patient never seen during stats
+  #
+  # To change the test patient, edit ONLY this field.
+  # Do NOT edit split.test_patients below — that section is not read by code.
+  test_patient: "BC23209"
+
+# ── Results ───────────────────────────────────────────────────────────────────
+results:
+  base_dir:               "results/"
+  experiment_naming:      "timestamp"
+  save_model_checkpoints: true
+  save_predictions:       true
+  save_logs:              true
+
+# ── Training — Phase 0: Classical Warmup ─────────────────────────────────────
+training:
+  epochs:    20             # ⬆ was 10 — val aCC still rising at epoch 10 on 20260328
+  cv_epochs: 10
+  cv_folds:  5
+  use_cv:    false
+
+  optimizer:     "adam"
+  lr:            0.001
+  learning_rate: 0.001
+  momentum:      0.9        # Unused by Adam
+  weight_decay:  0.0001     # ⬆ was 0.00001 — needed to close large train/val gap
+
+  scheduler:    "cosine"
+  cosine_t_max: 5
+
+  batch_size:   8
+  num_workers:  4
+  shuffle:      true
+  debug:        false
+
+  early_stopping_patience: 15   # ⬆ was 10
+  early_stopping_delta:    0.001 # Small delta — stop only on meaningful improvement
+
+  validation_metric: "loss"
+  pred_root:         "results/predictions/"
+
+  resume_path: null           # Fresh start — no checkpoint for Phase 0
+
+# ── Cross-validation ──────────────────────────────────────────────────────────
+cross_validation:
+  folds:        5
+  type:         "kfold"
+  shuffle:      true
+  random_state: 42
+
+# ── Model settings — Phase 0 ─────────────────────────────────────────────────
+model:
+  gene_filter:  250
+  aux_ratio:    0.0
+  aux_weight:   0.0
+  pretrained:   true
+  finetuning:   "ftconv"    # ⬆ was "frozen" — unfreeze last conv blocks for richer features
+
+  # ── QNN circuit (MUST be identical across all 3 phases) ──────────────────
+  n_qubits:        4        # 4 qubits → gradient scale ≈ 1/16
+  n_layers:        3        # ⬆ was 2 — 36 params gives circuit more expressivity
+  reduce_dim:      256      # FeatureReducer: 1792 → 256 → 4
+  decode_dim:      512      # ClassicalDecoder: 4 → 512 → 512 → 250
+  reducer_dropout: 0.5      # ⬆ was 0.3 — stronger regularization
+  decoder_dropout: 0.5      # ⬆ was 0.3 — stronger regularization
+  q_device:        "auto"   # lightning.qubit if installed, else default.qubit
+  init_noise:      0.01     # Near-zero init — anti-barren-plateau
+
+  local_quantum_loss: false # QNN frozen in Phase 0 — no PCA loss needed
+  local_loss_weight:  0.1
+
+  training_phase: 0         # 0 = Classical warmup
+
+  total_genes: null         # Set automatically from dataset at runtime
+
+# ── Active model ──────────────────────────────────────────────────────────────
+models:
+  active_model:   "qnn_gene_predictor_v2"
+  model_config:   "qnn_gene_predictor_v2"
+  save_best_only: true
+
+# ── Data split — HOW IT ACTUALLY WORKS ──────────────────────────────────────
+# The train/test split is driven entirely by data.test_patient above.
+#
+# data_generator.py (create_dataloaders) logic:
+#   1. Scans data/train/counts/**/*.npz  → discovers all patient IDs
+#   2. Scans data/test/counts/**/*.npz   → discovers test patient ID
+#   3. train_patients = all_patients MINUS test_patient
+#   4. Computes image + gene normalization stats from train_patients ONLY
+#   5. Builds train DataLoader from data/train/{counts,images}/<train_patients>
+#   6. Builds test  DataLoader from data/test/{counts,images}/<test_patient>
+#      using TRAINING normalization stats (no data leakage)
+#
+# spatial_patch_extractor.py uses data.test_patient to:
+#   • Route the test patient's patches → data/test/
+#   • Route all other patients' patches → data/train/
+#
+# The 'split.test_patients' list below is NOT read by any code.
+# It is kept only for documentation purposes.
+split:
+  # For reference only — NOT read by code. Edit data.test_patient instead.
+  test_patients:
+    - "BC23209"       # Currently held-out patient
+  # The remaining ~22 patients from the dataset become training patients:
+  # BC23209, BC23268, BC23269, BC23270, BC23272, BC23277, BC23287, BC23288,
+  # BC23377, BC23506, BC23508, BC23567, BC23803, BC23810, BC23895, BC23901,
+  # BC23903, BC23944, BC24044, BC24105, BC24220, BC24223
+
+# ── Gene filtering ────────────────────────────────────────────────────────────
+gene_expression:
+  min_total_reads:        1000
+  min_expression_percent: 0.10
+  top_genes_to_predict:   250
+
+# ── Preprocessing ─────────────────────────────────────────────────────────────
+preprocessing:
+  window_size:        299
+  quality_threshold:  1000
+  sparsity_threshold: 0.10
+
+spatial:
+  patch_window_size: 299
+  patch_resolution:  224
+
+# ── Execution ─────────────────────────────────────────────────────────────────
+execution:
+  seed:             42
+  gpu_enabled:      true
+  cuda_enabled:     true
+  mps_enabled:      true
+  max_image_pixels: 1000000000

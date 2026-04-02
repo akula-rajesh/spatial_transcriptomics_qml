@@ -23,22 +23,38 @@ logger = logging.getLogger(__name__)
 class PipelineOrchestrator:
     """Orchestrates the execution of the ML pipeline based on configuration."""
     
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(self, config_path: Optional[str] = None, resume_path: Optional[str] = None):
         """
         Initialize the pipeline orchestrator.
         
         Args:
             config_path: Optional path to configuration file (defaults to standard config)
+            resume_path: Optional path to a saved .pth checkpoint to resume training from.
+                         The checkpoint's state_dict is loaded into the model before
+                         the first training epoch.
         """
         self.config_manager = get_config_manager()
         self.factory_registry = get_factory_registry()
         self.result_tracker = None
-        
-        # Load main configuration
+
+        # Load main configuration first so we can read resume_path from it
         if config_path:
             self.config = self.config_manager.load_config(config_path)
         else:
             self.config = load_main_config()
+
+        # Resolve resume_path — CLI arg takes priority over config file value
+        config_resume = self.config.get('training', {}).get('resume_path', None)
+        if resume_path:
+            # CLI --resume was explicitly provided — always use it
+            self.resume_path = resume_path
+            logger.info(f"Resume path from CLI: {self.resume_path}")
+        elif config_resume:
+            # Fall back to training.resume_path in pipeline_config.yaml
+            self.resume_path = config_resume
+            logger.info(f"Resume path from config: {self.resume_path}")
+        else:
+            self.resume_path = None
 
         # Set up experiment
         self.experiment_id = self._create_experiment_id()
@@ -50,6 +66,15 @@ class PipelineOrchestrator:
             base_dir=results_base_dir
         )
         self.experiment_dir = self.result_tracker.run_dir
+
+        # Register as global tracker so trainers can locate the run directory
+        try:
+            from src.utils.result_tracker import initialize_tracker
+            # Re-use the already-created tracker by pointing the global at it
+            import src.utils.result_tracker as _rt_module
+            _rt_module._global_tracker = self.result_tracker
+        except Exception:
+            pass
 
         # Log configuration
         self.result_tracker.log_config(self.config)
@@ -115,8 +140,8 @@ class PipelineOrchestrator:
             # Log all results as metrics
             self._log_final_results(results)
 
-            # Save results to files
-            self.result_tracker.save_results()
+            # Save results to files — pass full results so results.json is complete
+            self.result_tracker.save_results(pipeline_results=results)
 
             # Update status
             self.result_tracker.update_status('completed')
@@ -125,6 +150,13 @@ class PipelineOrchestrator:
         except Exception as e:
             logger.error(f"Pipeline execution failed: {str(e)}")
             logger.error(traceback.format_exc())
+            # Always save whatever results we have, even on failure
+            try:
+                self._log_final_results(results)
+                self.result_tracker.save_results(pipeline_results=results)
+                self.result_tracker.update_status('failed')
+            except Exception as save_err:
+                logger.error(f"Could not save partial results: {save_err}")
             raise
             
         return results
@@ -241,97 +273,264 @@ class PipelineOrchestrator:
         except Exception as e:
             logger.error(f"Data processing failed: {str(e)}")
             raise
-            
+
     def _train_model(self) -> Dict[str, Any]:
-        """Train the configured model(s)."""
+        """
+        Train the configured model.
+
+        FIX: Store the trained trainer instance so _evaluate_model
+        can reuse it with best weights intact, instead of creating
+        a fresh untrained model.
+        """
         results = {}
-        
+
         try:
-            # Get active model from configuration
-            active_model = self.config.get('models', {}).get('active_model', 'classical_efficientnet')
-            
+            active_model = self.config.get('models', {}).get(
+                'active_model', 'classical_efficientnet'
+            )
             logger.info(f"Training model: {active_model}")
-            
-            # Load model configuration
+
             model_config = self.config_manager.load_model_config(active_model)
-            
-            # Create model using factory
+
+            # Merge pipeline model section
+            pipeline_model_section = self.config.get('model', {})
+            if pipeline_model_section:
+                model_config.update(pipeline_model_section)
+
+            # total_genes is intentionally left as None here.
+            # - If resuming: _load_checkpoint() reads aux_head shape from the
+            #   checkpoint and calls model.set_aux_head(ckpt_aux_nums) to resize.
+            # - If training from scratch: trainer._prepare_data_loaders() calls
+            #   model.set_aux_head(dataset.aux_nums) once the dataset is loaded.
+            # Setting a hardcoded fallback (e.g. 6250) causes a stale aux_head
+            # size mismatch on every resume when the real dataset has a different
+            # gene count (e.g. 6216 → aux_nums=5966 ≠ 6000).
+            if model_config.get('total_genes') is None:
+                model_config['total_genes'] = None   # resolved from dataset/checkpoint
+
+            # Create model
             model = create_component(
                 ComponentType.MODEL,
                 active_model,
                 config=model_config
             )
-            
-            # Create trainer using factory
+
+            # ── Resume from checkpoint if requested ───────────────────
+            if self.resume_path:
+                self._load_checkpoint(model, self.resume_path)
+
+            # Create trainer
             trainer = create_component(
                 ComponentType.TRAINER,
                 'supervised_trainer',
                 model=model,
                 config=self.config
             )
-            
-            # Train the model
+
+            # Train
             training_results = trainer.train()
             results[active_model] = training_results
-            
-            # Save model state
+
+            # ── Store trained trainer for evaluation ──────────────────
+            # This preserves best_state so evaluate() uses correct weights
+            self._trained_trainer = trainer
+            self._trained_model   = trainer.model
+
+            # Save model state via result_tracker
             if self.config.get('models', {}).get('save_best_only', True):
                 model_state = {
-                    'model_name': active_model,
-                    'state_dict': model.state_dict() if hasattr(model, 'state_dict') else None,
-                    'config': model_config,
-                    'training_results': training_results
+                    'model_name':       active_model,
+                    'state_dict':       trainer.model.state_dict(),
+                    'config':           model_config,
+                    'training_results': training_results,
+                    'best_epoch':       trainer.best_epoch,
                 }
-                self.result_tracker.save_model(model_state, f"{active_model}_final.pth")
+                self.result_tracker.save_model(
+                    model_state, f"{active_model}_final.pth"
+                )
 
             logger.info(f"Model training completed for {active_model}")
-            
+
         except Exception as e:
             logger.error(f"Model training failed: {str(e)}")
             raise
-            
+
         return results
-        
+
     def _evaluate_model(self) -> Dict[str, Any]:
-        """Evaluate trained model(s) on test data."""
+        """
+        Evaluate the trained model on the test set.
+
+        FIX: Reuse the already-trained trainer (with best_state intact)
+        instead of creating a fresh untrained model.
+        """
         results = {}
-        
+
         try:
-            # Get active model from configuration
-            active_model = self.config.get('models', {}).get('active_model', 'classical_efficientnet')
-            
+            active_model = self.config.get('models', {}).get(
+                'active_model', 'classical_efficientnet'
+            )
             logger.info(f"Evaluating model: {active_model}")
-            
-            # Load model configuration
-            model_config = self.config_manager.load_model_config(active_model)
-            
-            # Create model using factory
-            model = create_component(
-                ComponentType.MODEL,
-                active_model,
-                config=model_config
-            )
-            
-            # Create trainer for evaluation
-            trainer = create_component(
-                ComponentType.TRAINER,
-                'supervised_trainer',
-                model=model,
-                config=self.config
-            )
-            
-            # Evaluate the model
-            evaluation_results = trainer.evaluate()
+
+            # ── Prefer the trained trainer from _train_model ──────────
+            trained_trainer = getattr(self, '_trained_trainer', None)
+
+            if trained_trainer is not None:
+                logger.info(
+                    "[PipelineOrchestrator] Reusing trained trainer "
+                    f"(best epoch: {trained_trainer.best_epoch + 1}, "
+                    f"best val loss: {trained_trainer.best_val_loss:.6f})"
+                )
+                evaluation_results = trained_trainer.evaluate()
+            else:
+                # Fall back: create a new trainer and load from checkpoint
+                logger.warning(
+                    "[PipelineOrchestrator] No trained trainer cached. "
+                    "Creating new trainer — will attempt to load saved weights."
+                )
+                model_config = self.config_manager.load_model_config(active_model)
+                pipeline_model_section = self.config.get('model', {})
+                if pipeline_model_section:
+                    model_config.update(pipeline_model_section)
+                if model_config.get('total_genes') is None:
+                    model_config['total_genes'] = None   # resolved from checkpoint/dataset
+
+                model   = create_component(ComponentType.MODEL, active_model, config=model_config)
+                trainer = create_component(
+                    ComponentType.TRAINER, 'supervised_trainer',
+                    model=model, config=self.config
+                )
+                evaluation_results = trainer.evaluate()
+
             results[active_model] = evaluation_results
-            
             logger.info(f"Model evaluation completed for {active_model}")
-            
+
         except Exception as e:
             logger.error(f"Model evaluation failed: {str(e)}")
             raise
-            
+
         return results
-        
+
+    def _load_checkpoint(self, model, checkpoint_path: str) -> None:
+        """
+        Load a saved checkpoint's state_dict into model before training.
+
+        Handles two checkpoint formats:
+          1. Plain state_dict  — saved with torch.save(model.state_dict(), path)
+          2. Dict with 'state_dict' key — saved by result_tracker.save_model()
+             which pickles {'model_name', 'state_dict', 'config', ...}
+
+        Args:
+            model: The nn.Module to load weights into (already on device).
+            checkpoint_path: Absolute or project-relative path to .pth file.
+        """
+        import pickle
+        import torch
+
+        path = Path(checkpoint_path)
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Resume checkpoint not found: {checkpoint_path}"
+            )
+
+        logger.info(f"Loading checkpoint from: {checkpoint_path}")
+
+        # Determine device from model parameters
+        try:
+            device = next(model.parameters()).device
+        except StopIteration:
+            device = torch.device('cpu')
+
+        # Try loading as a pickle file first (result_tracker format)
+        try:
+            with open(path, 'rb') as f:
+                payload = pickle.load(f)
+
+            if isinstance(payload, dict) and 'state_dict' in payload:
+                state_dict = payload['state_dict']
+                logger.info(
+                    f"Checkpoint format: result_tracker dict "
+                    f"(model: {payload.get('model_name', 'unknown')}, "
+                    f"best_epoch: {payload.get('best_epoch', '?')})"
+                )
+            elif isinstance(payload, dict):
+                # Assume it IS the state_dict directly
+                state_dict = payload
+                logger.info("Checkpoint format: plain state_dict (pickle)")
+            else:
+                raise ValueError(f"Unexpected pickle payload type: {type(payload)}")
+
+        except (pickle.UnpicklingError, Exception):
+            # Fall back to torch.load (handles both state_dict and full model)
+            raw = torch.load(checkpoint_path, map_location=device)
+            if isinstance(raw, dict) and 'state_dict' in raw:
+                state_dict = raw['state_dict']
+                logger.info("Checkpoint format: torch dict with state_dict key")
+            elif isinstance(raw, dict):
+                state_dict = raw
+                logger.info("Checkpoint format: torch state_dict")
+            else:
+                # Full model saved with torch.save(model, path)
+                logger.info("Checkpoint format: full torch model — copying state_dict")
+                state_dict = raw.state_dict()
+
+        # Move state_dict tensors to model's device
+        state_dict = {
+            k: v.to(device) if hasattr(v, 'to') else v
+            for k, v in state_dict.items()
+        }
+
+        # ── Fix aux_head size mismatch before loading ──────────────────────
+        # The checkpoint was saved with aux_nums computed from the real dataset
+        # (e.g. 5966 = 6216 total − 250 main genes × 1.0 aux_ratio).
+        # The model was just built using total_genes from config (e.g. 6000),
+        # producing a different aux_head shape. PyTorch raises RuntimeError
+        # on size mismatch even with strict=False, so we must resize the model
+        # aux_head to match the checkpoint BEFORE calling load_state_dict.
+        ckpt_aux_weight = state_dict.get("aux_head.weight")  # shape: [aux_nums, feature_dim]
+        if ckpt_aux_weight is not None:
+            ckpt_aux_nums = ckpt_aux_weight.shape[0]
+            model_aux_nums = getattr(model, "aux_nums", None)
+            if model_aux_nums != ckpt_aux_nums:
+                logger.info(
+                    f"  aux_head size mismatch: model has {model_aux_nums}, "
+                    f"checkpoint has {ckpt_aux_nums}. "
+                    f"Resizing model aux_head → {ckpt_aux_nums} before loading."
+                )
+                if hasattr(model, "set_aux_head"):
+                    model.set_aux_head(ckpt_aux_nums)
+                else:
+                    # Fallback: directly replace aux_head with correct size
+                    import torch.nn as nn
+                    feature_dim = ckpt_aux_weight.shape[1]
+                    model.aux_head = nn.Linear(feature_dim, ckpt_aux_nums).to(device)
+                    model.aux_nums = ckpt_aux_nums
+                    logger.info(
+                        f"  aux_head replaced directly: "
+                        f"Linear({feature_dim} → {ckpt_aux_nums})"
+                    )
+
+        # ── Load weights ───────────────────────────────────────────────────
+        # strict=False allows partial checkpoint load (missing/extra keys are
+        # logged as warnings rather than errors).
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+
+        if missing:
+            logger.warning(
+                f"  Missing keys in checkpoint ({len(missing)}): "
+                f"{missing[:5]}{'...' if len(missing) > 5 else ''}"
+            )
+        if unexpected:
+            logger.warning(
+                f"  Unexpected keys in checkpoint ({len(unexpected)}): "
+                f"{unexpected[:5]}{'...' if len(unexpected) > 5 else ''}"
+            )
+
+        logger.info(
+            f"✓ Checkpoint loaded successfully — "
+            f"resuming training from pretrained weights on {device}"
+        )
+
     def _compare_results(self) -> Dict[str, Any]:
         """Compare results between different models."""
         results = {}
@@ -419,12 +618,62 @@ class PipelineOrchestrator:
                             f'{model_name}_best_val_loss',
                             model_results['best_val_loss']
                         )
+
+                    # Log best validation metric
+                    if 'best_val_metric' in model_results:
+                        self.result_tracker.log_metric(
+                            f'{model_name}_best_val_metric',
+                            model_results['best_val_metric']
+                        )
+
                     # Log training time
                     if 'training_time' in model_results:
                         self.result_tracker.log_metric(
                             f'{model_name}_training_time',
                             model_results['training_time']
                         )
+
+                    # Log epoch-by-epoch training losses
+                    if 'train_losses' in model_results:
+                        for epoch, loss in enumerate(model_results['train_losses']):
+                            self.result_tracker.log_metric(
+                                f'{model_name}_train_loss',
+                                loss,
+                                step=epoch
+                            )
+
+                    # Log epoch-by-epoch validation losses
+                    if 'val_losses' in model_results:
+                        for epoch, loss in enumerate(model_results['val_losses']):
+                            self.result_tracker.log_metric(
+                                f'{model_name}_val_loss',
+                                loss,
+                                step=epoch
+                            )
+
+                    # Log epoch-by-epoch training metrics (MAE, RMSE, etc.)
+                    if 'train_metrics' in model_results:
+                        for epoch, metrics_dict in enumerate(model_results['train_metrics']):
+                            if isinstance(metrics_dict, dict):
+                                for metric_name, metric_value in metrics_dict.items():
+                                    if isinstance(metric_value, (int, float)):
+                                        self.result_tracker.log_metric(
+                                            f'{model_name}_train_{metric_name}',
+                                            metric_value,
+                                            step=epoch
+                                        )
+
+                    # Log epoch-by-epoch validation metrics (MAE, RMSE, correlation)
+                    if 'val_metrics' in model_results:
+                        for epoch, metrics_dict in enumerate(model_results['val_metrics']):
+                            if isinstance(metrics_dict, dict):
+                                for metric_name, metric_value in metrics_dict.items():
+                                    if isinstance(metric_value, (int, float)):
+                                        self.result_tracker.log_metric(
+                                            f'{model_name}_val_{metric_name}',
+                                            metric_value,
+                                            step=epoch
+                                        )
 
         # Log evaluation results
         if 'evaluation' in results:

@@ -31,13 +31,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def run_training_pipeline(config_path: str) -> dict:
+def run_training_pipeline(config_path: str, resume_path: str = None) -> dict:
     """
     Run the full training pipeline using the orchestrator.
 
     Args:
         config_path: Path to configuration file
-        
+        resume_path: Optional path to a saved model checkpoint (.pth) to
+                     resume training from. Weights are loaded before the
+                     first training epoch.
+
     Returns:
         Dictionary containing pipeline results
     """
@@ -46,10 +49,12 @@ def run_training_pipeline(config_path: str) -> dict:
     logger.info("=" * 70)
     logger.info(f"Configuration: {config_path}")
     logger.info("Mode: Training")
+    if resume_path:
+        logger.info(f"Resuming from: {resume_path}")
     logger.info("=" * 70)
 
     # Create and run pipeline orchestrator
-    orchestrator = PipelineOrchestrator(config_path)
+    orchestrator = PipelineOrchestrator(config_path, resume_path=resume_path)
 
     # Display experiment info
     exp_info = orchestrator.get_experiment_info()
@@ -139,6 +144,12 @@ Examples:
         help='Enable verbose (DEBUG level) logging'
     )
 
+    parser.add_argument(
+        '--resume', '-r',
+        type=str,
+        help='Path to a saved model checkpoint (.pth) to resume training from'
+    )
+
     args = parser.parse_args()
     
     # Set logging level based on verbose flag
@@ -161,7 +172,7 @@ Examples:
             config_file = config_file[7:]  # Remove "config/" prefix
 
         if args.mode == 'train':
-            results = run_training_pipeline(config_file)
+            results = run_training_pipeline(config_file, resume_path=args.resume)
         elif args.mode == 'cross_validate':
             results = run_cross_validation_pipeline(config_file)
         else:

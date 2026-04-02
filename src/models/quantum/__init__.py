@@ -8,6 +8,8 @@ spatial gene expression from histology images.
 # Try to import quantum components
 try:
     from .amplitude_embedding_qml import QuantumAmplitudeEmbeddingModel
+    from .efficientnet_quantum_head import EfficientNetQuantumHead
+    from .qnn_gene_predictor import QNNGenePredictor, QNNLayer, FeatureReducer, ClassicalDecoder
     from .quantum_layers import (
         QuantumMeasurementLayer,
         QuantumFeatureEncoder,
@@ -18,13 +20,20 @@ try:
     )
     QUANTUM_AVAILABLE = True
 except ImportError as e:
-    # Provide dummy classes if quantum dependencies are not available
     from typing import Any
-    
+
     class QuantumAmplitudeEmbeddingModel:
         def __init__(self, *args, **kwargs):
             raise ImportError("Quantum models require PennyLane installation: pip install pennylane")
-    
+
+    class EfficientNetQuantumHead:
+        def __init__(self, *args, **kwargs):
+            raise ImportError("Quantum models require PennyLane installation: pip install pennylane")
+
+    class QNNGenePredictor:
+        def __init__(self, *args, **kwargs):
+            raise ImportError("Quantum models require PennyLane installation: pip install pennylane")
+
     class QuantumMeasurementLayer:
         def __init__(self, *args, **kwargs):
             raise ImportError("Quantum models require PennyLane installation: pip install pennylane")
@@ -57,6 +66,11 @@ __email__ = "research@spatial-transcriptomics.org"
 # Define what should be imported with "from src.models.quantum import *"
 __all__ = [
     'QuantumAmplitudeEmbeddingModel',
+    'EfficientNetQuantumHead',
+    'QNNGenePredictor',
+    'QNNLayer',
+    'FeatureReducer',
+    'ClassicalDecoder',
     'QuantumMeasurementLayer',
     'QuantumFeatureEncoder',
     'HybridQuantumClassicalLayer',

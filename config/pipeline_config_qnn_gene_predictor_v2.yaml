@@ -1,0 +1,252 @@
+# ============================================================
+# Pipeline Configuration — QNN Gene Predictor V2
+# ============================================================
+# Model   : QNNGenePredictorV2
+#           EfficientNet-B4 → FeatureReducerV2 → QNNLayerV2 (PennyLane)
+#           → ClassicalDecoderV2 → gene prediction heads
+#
+# V2 Fixes applied (see src/models/quantum/qnn_gene_predictor_v2.py):
+#   ✅ FIX #1: Gradient flow restored (QuantumFunction / lightning backprop)
+#   ✅ FIX #2: Near-zero weight init  → avoids barren plateau
+#   ✅ FIX #3: Adam optimizer         → handles tiny quantum gradients
+#   ✅ FIX #4: n_qubits=4 by default  → gradient ≈ 1/16 vs 1/256 in V1
+#   ✅ FIX #5: 3-phase training       → warmup → quantum → joint
+#   ✅ FIX #6: Local quantum loss     → optional PCA-projected supervision
+#   ✅ FIX #7: Auto lightning.qubit   → full backprop when available
+#
+# ──────────────────────────────────────────────────────────────────────────
+# RECOMMENDED TRAINING WORKFLOW (3-phase):
+# ──────────────────────────────────────────────────────────────────────────
+#
+#   PHASE 0 — Classical Warmup (this config, training_phase=0, 10 epochs)
+#     QNN weights frozen, FeatureReducer + Decoder + Heads train.
+#     Purpose: Classical parts learn a meaningful representation first.
+#     Expected: Loss drops from ~1.5 to ~0.8-1.0, aCC rises to ~0.1+
+#
+#     python src/main.py --config config/pipeline_config_qnn_gene_predictor_v2.yaml \
+#                        --mode train
+#
+#   PHASE 1 — Quantum Training (training_phase=1, 15 epochs)
+#     Classical parts frozen, only QNN weights train.
+#     Purpose: Quantum circuit adapts to the fixed classical representations.
+#     Change: set training_phase: 1  in model section below
+#
+#     python src/main.py --config config/pipeline_config_qnn_gene_predictor_v2.yaml \
+#                        --mode train \
+#                        --resume results/<phase0_exp>/models/qnn_gene_predictor_v2_best.pth
+#
+#   PHASE 2 — Joint Fine-tuning (training_phase=2, 20+ epochs)
+#     All parameters trainable, very small lr=0.00005.
+#     Change: set training_phase: 2, lr: 0.00005  below
+#
+#     python src/main.py --config config/pipeline_config_qnn_gene_predictor_v2.yaml \
+#                        --mode train \
+#                        --resume results/<phase1_exp>/models/qnn_gene_predictor_v2_best.pth
+# ============================================================
+
+# ── Pipeline steps ───────────────────────────────────────────────────────────
+pipeline:
+  download_data:  false
+  data_loader:    "spatial_downloader"
+
+  process_data: false
+  processing_steps:
+    - name: "spatial_file_organizer"
+      enabled: true
+    - name: "spatial_gene_processor"
+      enabled: true
+    - name: "spatial_stain_normalizer"
+      enabled: true
+    - name: "spatial_patch_extractor"
+      enabled: true
+
+  train_model:     true
+  evaluate_model:  false
+  compare_results: false
+
+# ── Data download ─────────────────────────────────────────────────────────────
+download:
+  url:        "https://data.mendeley.com/public-api/zip/29ntw7sh4r/download/5"
+  remove_zip: true
+  chunk_size: 1024
+  max_retries: 3
+  timeout:    300
+
+# ── Data paths ────────────────────────────────────────────────────────────────
+data:
+  input_dir:          "data/input/"
+  processed_dir:      "data/processed/"
+  train_dir:          "data/train/"
+  test_dir:           "data/test/"
+  metadata_file:      "metadata.csv"
+  verify_ssl:         false
+
+  stbc_dir:           "data/stbc/"
+  raw_dir:            "data/raw/"
+  organized_dir:      "data/organized/"
+  count_filtered_dir: "data/processed/count_filtered/"
+  stained_dir:        "data/stained/"
+  train_counts_dir:   "data/train/counts/"
+  train_images_dir:   "data/train/images/"
+  test_counts_dir:    "data/test/counts/"
+  test_images_dir:    "data/test/images/"
+
+  test_patient: "BC23450"
+
+# ── Results ───────────────────────────────────────────────────────────────────
+results:
+  base_dir:               "results/"
+  experiment_naming:      "timestamp"
+  save_model_checkpoints: true
+  save_predictions:       true
+  save_logs:              true
+
+# ── Training ─────────────────────────────────────────────────────────────────
+# V2 training notes:
+#   • Adam handles tiny quantum gradients much better than SGD
+#   • lr=0.001 for Phase 0 & 1, reduce to 0.00005 for Phase 2
+#   • batch_size=8 — quantum circuit still needs CPU circuit evals
+#     per-shift-rule: 2 × n_qubits × n_layers × 3 = 2×4×2×3 = 48 evals/batch
+#   • early_stopping_patience=15 — QML plateaus are gradual, give it time
+#
+# ── PHASE 0 settings (DEFAULT — classical warmup) ────────────────────────────
+training:
+  epochs:    25              # Phase 2: longer joint fine-tuning
+  cv_epochs: 10
+  cv_folds:  5
+  use_cv:    false
+
+  # ✅ FIX #3: Adam optimizer — far better than SGD for QML
+  optimizer:    "adam"
+  lr:           0.00005     # Phase 2: very small lr to avoid destroying learned weights
+  learning_rate: 0.00005
+  momentum:    0.9          # Unused by Adam but kept for config compatibility
+  weight_decay: 0.00001      # L2 regularization
+
+  # Scheduler — ReduceLROnPlateau works well with Adam for QML
+  # (CosineAnnealingLR also fine — change scheduler: "cosine" if preferred)
+  scheduler:    "cosine"
+  cosine_t_max: 5
+
+  # DataLoader
+  # batch_size=8: smaller batches reduce quantum circuit overhead
+  # Each batch needs 48 circuit evals for param-shift (n_qubits=4, n_layers=2)
+  batch_size:   8            # ✅ Smaller than classical (32) — quantum circuit overhead
+  num_workers:  4
+  shuffle:      true
+  debug:        false
+
+  # Early stopping — be patient with QML
+  early_stopping_patience: 15   # Longer than V1 (10) — give quantum training time
+  early_stopping_delta:    0.0
+
+  validation_metric: "loss"
+  pred_root:         "results/predictions/"
+
+  # Resume — set path for Phase 1 or Phase 2
+  # Phase 0: resume_path: null  (fresh start)
+  # Phase 1: resume_path: "results/<phase0_exp>/models/qnn_gene_predictor_v2_best.pth"
+  # Phase 2: resume_path: "results/<phase1_exp>/models/qnn_gene_predictor_v2_best.pth"
+  resume_path: "results/experiment_20260326_175252/20260326_175252/models/qnn_gene_predictor_v2_final.pth"            # ← SET THIS to your Phase 1 best model path
+
+# ── Cross-validation ──────────────────────────────────────────────────────────
+cross_validation:
+  folds:        5
+  type:         "kfold"
+  shuffle:      true
+  random_state: 42
+
+# ── Model settings ────────────────────────────────────────────────────────────
+model:
+  gene_filter:  250
+  aux_ratio:    0.0          # No aux head — keep V2 training focused
+  aux_weight:   0.0
+  pretrained:   true
+  finetuning:   "ftall"      # Phase 2: unfreeze ALL (backbone + QNN + heads)
+
+  # ✅ V2 QNN parameters (smaller, safer for gradient flow)
+  n_qubits:         4        # ✅ 4 qubits: gradient ≈ 1/16 (vs 1/256 with 8 qubits)
+  n_layers:         2        # ✅ 2 layers: 24 quantum params total
+  reduce_dim:       256      # FeatureReducer: 1792 → 256 → n_qubits
+  decode_dim:       512      # ClassicalDecoder: n_qubits → 512 → 250 genes
+  reducer_dropout:  0.3
+  decoder_dropout:  0.3
+  q_device:         "auto"   # ✅ Auto-select: lightning.qubit if available, else default.qubit
+  init_noise:       0.01     # ✅ Near-zero init (key anti-barren-plateau fix)
+
+  # Local quantum loss — disable for Phase 2 (backbone unfrozen, signal flows end-to-end)
+  local_quantum_loss: false
+  local_loss_weight:  0.1
+
+  # Training phase (PhaseController)
+  # 0 = Classical warmup: QNN frozen, classical components train
+  # 1 = Quantum training:  classical frozen, QNN weights train
+  # 2 = Joint fine-tuning: all parameters train at small lr
+  training_phase: 2          # Phase 2: all parameters trainable
+
+  total_genes:  null         # Set automatically at runtime
+
+# ── Active model ──────────────────────────────────────────────────────────────
+models:
+  active_model:   "qnn_gene_predictor_v2"
+  model_config:   "qnn_gene_predictor_v2"
+  save_best_only: true
+
+# ── Data split ────────────────────────────────────────────────────────────────
+split:
+  test_patients:
+    - "BC23450"
+  validation_ratio: 0.2
+
+# ── Gene filtering ────────────────────────────────────────────────────────────
+gene_expression:
+  min_total_reads:        1000
+  min_expression_percent: 0.10
+  top_genes_to_predict:   250
+
+# ── Preprocessing — paper: window=299, resize to 224 ─────────────────────────
+preprocessing:
+  window_size:        299
+  quality_threshold:  1000
+  sparsity_threshold: 0.10
+
+spatial:
+  patch_window_size: 299
+  patch_resolution:  224
+
+# ── Execution ─────────────────────────────────────────────────────────────────
+execution:
+  seed:             42
+  gpu_enabled:      true
+  cuda_enabled:     true
+  mps_enabled:      true     # Apple Metal (M1/M2/M3/M4)
+  max_image_pixels: 1000000000
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE CONFIGURATIONS — copy-paste to switch phases
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# PHASE 0 (this config — Classical Warmup):
+#   model.training_phase:  0
+#   model.finetuning:      "frozen"
+#   training.epochs:       10
+#   training.lr:           0.001
+#   training.resume_path:  null
+#   model.local_quantum_loss: false
+#
+# PHASE 1 (Quantum Training — paste over model and training sections):
+#   model.training_phase:  1
+#   model.finetuning:      "frozen"
+#   training.epochs:       15
+#   training.lr:           0.001
+#   training.resume_path:  "results/<phase0_exp>/models/qnn_gene_predictor_v2_best.pth"
+#   model.local_quantum_loss: true   ← enable for direct QNN supervision
+#
+# PHASE 2 (Joint Fine-tuning — paste over model and training sections):
+#   model.training_phase:  2
+#   model.finetuning:      "ftall"   ← unfreeze backbone too
+#   training.epochs:       25
+#   training.lr:           0.00005   ← much smaller lr
+#   training.resume_path:  "results/<phase1_exp>/models/qnn_gene_predictor_v2_best.pth"
+#   model.local_quantum_loss: false
+# ─────────────────────────────────────────────────────────────────────────────

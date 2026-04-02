@@ -1,293 +1,377 @@
 """
-Quantum Amplitude Embedding model for spatial transcriptomics prediction.
+Quantum Amplitude Embedding model for spatial transcriptomics.
+
+Architecture:
+  Classical backbone : EfficientNet-B4 → feature vector (1792-dim)
+  Dimensionality red : Linear(1792 → 2^n_qubits)   e.g. 1792 → 8
+  Amplitude embedding: AngleEmbedding or AmplitudeEmbedding
+  Variational circuit : StronglyEntanglingLayers(weights shape: (n_layers, n_qubits, 3))
+  Classical output   : Linear(n_qubits → gene_filter)
+  Aux head           : Linear(n_qubits → aux_nums)
+
+FIXES:
+  1. Weight shape: (n_layers, n_qubits, 3) — the 3 is ALWAYS 3
+     (Rx, Ry, Rz rotations per qubit), NOT n_qubits.
+     StronglyEntanglingLayers always uses 3 rotation params per qubit.
+  2. set_aux_head() added so trainer can install aux head after dataset built.
+  3. Device consistency: quantum output moved to model device before heads.
 """
 
 import logging
 from typing import Dict, Any, Optional, Tuple
+
 import torch
 import torch.nn as nn
 import numpy as np
 
-# Try to import quantum libraries
+logger = logging.getLogger(__name__)
+
+# ── PennyLane imports (optional) ──────────────────────────────────────
 try:
     import pennylane as qml
-    from pennylane import numpy as pnp
     PENNYLANE_AVAILABLE = True
 except ImportError:
     PENNYLANE_AVAILABLE = False
-    logging.warning("PennyLane not available, quantum models will not function")
+    logger.warning("PennyLane not installed — quantum circuit disabled. "
+                   "Run: pip install pennylane")
 
-from src.models.base_model import BaseModel
-from src.models.quantum.quantum_layers import QuantumMeasurementLayer
 
-logger = logging.getLogger(__name__)
+class QuantumAmplitudeEmbeddingModel(nn.Module):
+    """
+    Hybrid Classical-Quantum model using amplitude embedding.
 
-class QuantumAmplitudeEmbeddingModel(BaseModel):
-    """Quantum Machine Learning model using amplitude embedding for gene expression prediction."""
-    
+    Config keys (read from config['model'] or top-level):
+        n_qubits      (int)  : Number of qubits. Default 3.
+                               Circuit input dim = 2^n_qubits.
+        n_layers      (int)  : VQC depth (StronglyEntanglingLayers). Default 2.
+        gene_filter   (int)  : Main output genes. Default 250.
+        aux_ratio     (float): Aux genes fraction. Default 1.0.
+        total_genes   (int)  : Total genes (sets aux_nums). Optional.
+        pretrained    (bool) : ImageNet backbone weights. Default True.
+        finetuning    (str)  : 'ftall'|'ft1'|'ft2'|'frozen'. Default 'ftall'.
+
+    Weight shape contract (PennyLane StronglyEntanglingLayers):
+        weights.shape == (n_layers, n_qubits, 3)
+        The trailing 3 is ALWAYS 3 = (Rx, Ry, Rz) — fixed by PennyLane API.
+        It does NOT equal n_qubits.
+    """
+
     def __init__(self, config: Dict[str, Any]):
-        """
-        Initialize the Quantum Amplitude Embedding model.
-        
-        Args:
-            config: Configuration dictionary for the model
-        """
-        if not PENNYLANE_AVAILABLE:
-            raise ImportError("PennyLane is required for quantum models but not available")
-            
-        super().__init__(config)
-        
-        # Quantum parameters
-        self.num_qubits = self.get_config_value('quantum.num_qubits', 8)
-        self.num_layers = self.get_config_value('quantum.num_layers', 3)
-        self.embedding_method = self.get_config_value('quantum.embedding_method', 'amplitude_encoding')
-        self.ansatz = self.get_config_value('quantum.ansatz', 'strongly_entangling')
-        self.diff_method = self.get_config_value('quantum.diff_method', 'adjoint')
-        self.dev_type = self.get_config_value('quantum.dev_type', 'default.qubit')
-        
-        # Classical preprocessing
-        self.classical_backbone = self.get_config_value('architecture.classical_preprocessor', 'efficientnet_b4')
-        self.classical_pretrained = self.get_config_value('architecture.classical_pretrained', True)
-        self.preprocessing_features = self.get_config_value('architecture.preprocessing_features', 1792)
-        self.quantum_feature_dimension = self.get_config_value('architecture.quantum_feature_dimension', 256)
-        
-        # Device settings
-        self.shots = self.get_config_value('device.shots', None)
-        self.analytic = self.get_config_value('device.analytic', True)
-        self.parallel_devices = self.get_config_value('device.parallel_devices', 1)
-        
-        # Build the model
-        self._build_model()
-        
-        # Move model to device
-        self.to(self.device)
-        
-    def _build_model(self) -> None:
-        """Build the Quantum Amplitude Embedding model architecture."""
-        # Classical feature extractor (simplified for this example)
-        self.classical_extractor = self._build_classical_extractor()
-        
-        # Calculate actual feature size from classical extractor
-        # Classical extractor outputs: 128 channels × 4 × 4 = 2048 features
-        actual_feature_size = 128 * 4 * 4  # 2048
+        super().__init__()
 
-        # Feature projection to quantum dimension
-        self.feature_projection = nn.Sequential(
-            nn.Linear(actual_feature_size, 1024),
-            nn.ReLU(inplace=True),
-            nn.Dropout(self.dropout_rate),
-            nn.Linear(1024, self.quantum_feature_dimension),
-            nn.LayerNorm(self.quantum_feature_dimension)
+        # ── Resolve config ────────────────────────────────────────────
+        model_cfg = config.get("model", {})
+
+        def _get(key: str, default):
+            return config.get(key, model_cfg.get(key, default))
+
+        self.n_qubits    = int(_get("n_qubits",   3))
+        self.n_layers    = int(_get("n_layers",   2))
+        self.gene_filter = int(_get("gene_filter", 250))
+        self.aux_ratio   = float(_get("aux_ratio", 1.0))
+        pretrained       = bool(_get("pretrained", True))
+        finetuning       = str(_get("finetuning",  "ftall"))
+
+        total_genes = config.get("total_genes") or model_cfg.get("total_genes")
+        if total_genes is None:
+            logger.warning("total_genes not provided — aux_nums=0. "
+                           "Call set_aux_head(aux_nums) after dataset is built.")
+            self.aux_nums = 0
+        else:
+            self.aux_nums = int(
+                (int(total_genes) - self.gene_filter) * self.aux_ratio
+            )
+
+        # Quantum input dimension = 2^n_qubits
+        self._q_dim = 2 ** self.n_qubits   # 3 qubits → 8, 4 qubits → 16
+
+        # ── Device ───────────────────────────────────────────────────
+        self._device = self._select_device()
+
+        # ── Classical backbone (EfficientNet-B4) ─────────────────────
+        self.backbone, self._feature_dim = self._build_backbone(pretrained)
+        self._apply_finetuning(finetuning)
+
+        # ── Dimensionality reduction: 1792 → 2^n_qubits ──────────────
+        self.pre_quantum = nn.Sequential(
+            nn.Linear(self._feature_dim, self._q_dim),
+            nn.Tanh(),    # Tanh keeps values in [-1, 1] for angle embedding
         )
-        
-        # Quantum preprocessing
-        self.quantum_preprocessing = QuantumPreprocessing(
-            method=self.get_config_value('quantum_preprocessing.normalization_method', 'minmax'),
-            scaling=self.get_config_value('quantum_preprocessing.encoding_scaling', 1.0)
+
+        # ── Quantum circuit ───────────────────────────────────────────
+        self._quantum_layer = self._build_quantum_layer()
+
+        # ── FIX: Weight shape = (n_layers, n_qubits, 3) ──────────────
+        # The trailing 3 is ALWAYS 3 regardless of n_qubits.
+        # StronglyEntanglingLayers uses 3 rotation gates (Rx, Ry, Rz)
+        # per qubit per layer. This is a PennyLane API constant.
+        #
+        # WRONG (previous bug):  shape = (n_layers, n_qubits)  → dim[-1]=n_qubits
+        # CORRECT:               shape = (n_layers, n_qubits, 3) → dim[-1]=3
+        self.q_weights = nn.Parameter(
+            torch.randn(self.n_layers, self.n_qubits, 3, dtype=torch.float32) * 0.1
         )
-        
-        # Quantum circuit as a layer
-        self.quantum_layer = QuantumCircuitLayer(
-            num_qubits=self.num_qubits,
-            num_layers=self.num_layers,
-            embedding_method=self.embedding_method,
-            ansatz=self.ansatz,
-            diff_method=self.diff_method,
-            dev_type=self.dev_type,
-            shots=self.shots,
-            analytic=self.analytic
+
+        logger.info(
+            f"Quantum weights shape: {list(self.q_weights.shape)} "
+            f"= (n_layers={self.n_layers}, n_qubits={self.n_qubits}, 3)"
         )
-        
-        # Quantum measurement layer
-        self.measurement_layer = QuantumMeasurementLayer(
-            num_qubits=self.num_qubits,
-            output_dim=self.output_genes
+
+        # ── Output heads ──────────────────────────────────────────────
+        # Quantum circuit outputs n_qubits expectation values
+        self.main_head = nn.Linear(self.n_qubits, self.gene_filter)
+        self.aux_head: Optional[nn.Linear] = (
+            nn.Linear(self.n_qubits, self.aux_nums)
+            if self.aux_nums > 0 else None
         )
-        
-        # Post-processing
-        self.post_processor = nn.Sequential(
-            nn.Linear(self.output_genes, 512),
-            nn.ReLU(inplace=True),
-            nn.Dropout(self.dropout_rate),
-            nn.Linear(512, self.output_genes)
+
+        # ── Move all to device ────────────────────────────────────────
+        self.to(self._device)
+
+        logger.info(
+            f"QuantumAmplitudeEmbeddingModel initialised — "
+            f"n_qubits={self.n_qubits}, n_layers={self.n_layers}, "
+            f"q_dim={self._q_dim}, "
+            f"main_genes={self.gene_filter}, aux_genes={self.aux_nums}, "
+            f"device={self._device}"
         )
-        
-        self.log_info(f"Built Quantum Amplitude Embedding model with {self.num_qubits} qubits")
-        
-    def _build_classical_extractor(self) -> nn.Module:
-        """Build classical feature extractor."""
-        # Simplified feature extractor for demonstration
-        return nn.Sequential(
-            # Conv layers to extract features
-            nn.Conv2d(self.input_channels, 32, kernel_size=3, padding=1),
-            nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(2),
-            
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(2),
-            
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.AdaptiveAvgPool2d((4, 4)),
-            nn.Flatten()
-        )
-        
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+
+    # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
+
+    @property
+    def device(self) -> torch.device:
+        return self._device
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def set_aux_head(self, aux_nums: int) -> None:
         """
-        Forward pass through the model.
-        
+        Install or replace aux head after dataset is known.
+        Called by SupervisedTrainer when total_genes was not available
+        at model construction time.
+        """
+        if self.aux_nums == aux_nums and self.aux_head is not None:
+            return
+
+        self.aux_nums = aux_nums
+        self.aux_head = nn.Linear(self.n_qubits, aux_nums).to(self._device)
+        logger.info(f"Aux head installed: Linear({self.n_qubits} → {aux_nums}) "
+                    f"on {self._device}")
+
+    def forward(
+            self, x: torch.Tensor
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """
+        Forward pass.
+
         Args:
-            x: Input tensor of shape (batch_size, channels, height, width)
-            
+            x: Image tensor (B, 3, H, W) on model.device.
+
         Returns:
-            Tuple of (main_output, auxiliary_output)
+            (main_pred, aux_pred)
         """
         # Classical feature extraction
-        classical_features = self.classical_extractor(x)
-        projected_features = self.feature_projection(classical_features)
-        
-        # Quantum preprocessing
-        quantum_ready_features = self.quantum_preprocessing(projected_features)
-        
-        # Quantum circuit processing
-        quantum_outputs = []
-        for i in range(quantum_ready_features.size(0)):
-            # Process each sample individually due to quantum simulator limitations
-            sample_features = quantum_ready_features[i:i+1]
-            quantum_output = self.quantum_layer(sample_features)
-            quantum_outputs.append(quantum_output)
-            
-        quantum_features = torch.stack(quantum_outputs, dim=0).squeeze(1)
-        
-        # Measurement and post-processing
-        measured_output = self.measurement_layer(quantum_features)
-        main_output = self.post_processor(measured_output)
-        
-        # No auxiliary output for quantum model in this implementation
-        auxiliary_output = None
-        
-        return main_output, auxiliary_output
-        
-    def predict(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Predict gene expression from input images.
-        
-        Args:
-            x: Input tensor of shape (batch_size, channels, height, width)
-            
-        Returns:
-            Predicted gene expression tensor
-        """
-        with torch.no_grad():
-            main_output, _ = self.forward(x)
-            return main_output
+        features    = self.backbone(x)                    # (B, 1792) float32
+        q_input     = self.pre_quantum(features).float()  # (B, 2^n_qubits) float32
 
-class QuantumPreprocessing(nn.Module):
-    """Preprocessing layer for preparing data for quantum embedding."""
-    
-    def __init__(self, method: str = 'minmax', scaling: float = 1.0):
-        super().__init__()
-        self.method = method
-        self.scaling = scaling
-        
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Preprocess features for quantum embedding."""
-        if self.method == 'minmax':
-            # Min-max normalization to [0, 1]
-            x_min = torch.min(x, dim=1, keepdim=True)[0]
-            x_max = torch.max(x, dim=1, keepdim=True)[0]
-            x_norm = (x - x_min) / (x_max - x_min + 1e-8)
-        elif self.method == 'zscore':
-            # Z-score normalization
-            x_mean = torch.mean(x, dim=1, keepdim=True)
-            x_std = torch.std(x, dim=1, keepdim=True)
-            x_norm = (x - x_mean) / (x_std + 1e-8)
-        else:  # unit_vector
-            # Normalize to unit vector
-            x_norm = F.normalize(x, p=2, dim=1)
-            
-        # Apply scaling
-        x_scaled = x_norm * self.scaling
-        
-        # Ensure features can be embedded (pad or truncate to power of 2)
-        target_dim = 2 ** int(np.ceil(np.log2(x_scaled.shape[1])))
-        if x_scaled.shape[1] < target_dim:
-            padding = target_dim - x_scaled.shape[1]
-            x_padded = F.pad(x_scaled, (0, padding), mode='constant', value=0)
-        elif x_scaled.shape[1] > target_dim:
-            x_padded = x_scaled[:, :target_dim]
-        else:
-            x_padded = x_scaled
-            
-        return x_padded
+        # Quantum layer — handles CPU transfer and float32 cast internally
+        q_output    = self._run_quantum(q_input)          # (B, n_qubits) float32
 
-class QuantumCircuitLayer(nn.Module):
-    """Quantum circuit layer using PennyLane."""
-    
-    def __init__(self, num_qubits: int, num_layers: int, embedding_method: str,
-                 ansatz: str, diff_method: str, dev_type: str, shots: Optional[int],
-                 analytic: bool):
-        super().__init__()
-        
-        self.num_qubits = num_qubits
-        self.num_layers = num_layers
-        self.embedding_method = embedding_method
-        self.ansatz = ansatz
-        self.diff_method = diff_method
-        
-        # Create quantum device
-        if shots is None and analytic:
-            self.dev = qml.device(dev_type, wires=num_qubits)
-        else:
-            self.dev = qml.device(dev_type, wires=num_qubits, shots=shots)
-            
-        # Create quantum circuit
-        self.qnode = qml.QNode(self._circuit, self.dev, diff_method=diff_method)
-        
-        # Initialize parameters
-        self.weights = nn.Parameter(torch.randn(num_layers, num_qubits, 3) * 0.1)
-        
-    def _circuit(self, features, weights):
-        """Define the quantum circuit."""
-        # Amplitude embedding
-        if self.embedding_method == 'amplitude_encoding':
-            qml.AmplitudeEmbedding(features=features, wires=range(self.num_qubits), pad_with=0.)
-        else:  # angle_encoding
-            for i in range(min(len(features), self.num_qubits)):
-                qml.RX(features[i], wires=i)
-                
-        # Ansatz layers
-        for l in range(self.num_layers):
-            if self.ansatz == 'strongly_entangling':
-                qml.StronglyEntanglingLayers(weights=weights[l], wires=range(self.num_qubits))
-            else:  # basic_entangling
-                for i in range(self.num_qubits):
-                    qml.Rot(weights[l, i, 0], weights[l, i, 1], weights[l, i, 2], wires=i)
-                # Add entanglement
-                for i in range(self.num_qubits):
-                    qml.CNOT(wires=[i, (i + 1) % self.num_qubits])
-                    
-        # Return expectation values
-        return [qml.expval(qml.PauliZ(i)) for i in range(self.num_qubits)]
-        
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass through quantum circuit."""
-        # Convert to numpy for PennyLane
-        x_np = x.detach().cpu().numpy().astype(np.float64)
-        weights_np = self.weights.detach().cpu().numpy()
-        
-        # Execute quantum circuit
+        # Classical output heads
+        main_pred   = self.main_head(q_output)
+        aux_pred    = self.aux_head(q_output) if self.aux_head is not None else None
+
+        return main_pred, aux_pred
+
+    # ------------------------------------------------------------------
+    # Quantum helpers
+    # ------------------------------------------------------------------
+
+    def _build_quantum_layer(self):
+        """Build PennyLane quantum circuit if available."""
+        if not PENNYLANE_AVAILABLE:
+            logger.warning("PennyLane not available — using classical fallback")
+            return None
+
         try:
-            result = self.qnode(x_np, weights_np)
-            # Convert back to torch tensor
-            return torch.tensor(result, dtype=torch.float32, device=x.device)
-        except Exception as e:
-            logger.warning(f"Quantum circuit execution failed: {str(e)}")
-            # Return zeros as fallback
-            return torch.zeros(self.num_qubits, dtype=torch.float32, device=x.device)
+            dev = qml.device("default.qubit", wires=self.n_qubits)
 
-__all__ = ['QuantumAmplitudeEmbeddingModel']
+            # diff_method="parameter-shift":
+            #   - Works on ANY device (CPU, MPS, CUDA)
+            #   - Does NOT require CUDA-compiled PyTorch
+            #   - "backprop" requires torch+CUDA and fails on MPS
+            @qml.qnode(dev, interface="torch", diff_method="parameter-shift")
+            def circuit(inputs, weights):
+                """
+                Variational quantum circuit.
+
+                Args:
+                    inputs  : (2^n_qubits,) amplitude-embedded features
+                              — must be on CPU (PennyLane runs on CPU)
+                    weights : (n_layers, n_qubits, 3) rotation angles
+                              — the trailing 3 is ALWAYS 3 (Rx, Ry, Rz)
+                              — must be on CPU
+                """
+                qml.AmplitudeEmbedding(
+                    inputs,
+                    wires=range(self.n_qubits),
+                    normalize=True,
+                    pad_with=0.0,
+                )
+                qml.StronglyEntanglingLayers(
+                    weights,
+                    wires=range(self.n_qubits),
+                )
+                return [qml.expval(qml.PauliZ(i))
+                        for i in range(self.n_qubits)]
+
+            logger.info(
+                f"Quantum circuit built: {self.n_qubits} qubits, "
+                f"{self.n_layers} layers, diff_method=parameter-shift, "
+                f"weights shape=({self.n_layers}, {self.n_qubits}, 3)"
+            )
+            return circuit
+
+        except Exception as e:
+            logger.warning(f"Failed to build quantum circuit: {e} "
+                           "— using classical fallback")
+            return None
+
+    def _run_quantum(self, q_input: torch.Tensor) -> torch.Tensor:
+        """
+        Run quantum circuit on batch.
+
+        PennyLane's default.qubit simulator always runs on CPU.
+        We explicitly move inputs/weights to CPU before the circuit
+        and move results back to model device (MPS/CUDA/CPU) after.
+
+        Args:
+            q_input: (B, 2^n_qubits) pre-quantum features on model device
+
+        Returns:
+            (B, n_qubits) expectation values on model device
+        """
+        if self._quantum_layer is None or not PENNYLANE_AVAILABLE:
+            return self._classical_fallback(q_input)
+
+        batch_size = q_input.shape[0]
+
+        # Move to CPU for PennyLane (simulator is CPU-only)
+        # Also detach from MPS graph — PennyLane needs plain CPU tensors
+        q_input_cpu   = q_input.detach().cpu().float()   # float32
+        q_weights_cpu = self.q_weights.detach().cpu().float()
+
+        outputs = []
+        for i in range(batch_size):
+            result = self._quantum_layer(
+                q_input_cpu[i],    # (2^n_qubits,) float32 on CPU
+                q_weights_cpu,     # (n_layers, n_qubits, 3) float32 on CPU
+            )
+            # PennyLane returns float64 tensors — cast to float32 immediately
+            outputs.append(torch.stack(result).float())   # (n_qubits,) float32
+
+        # Stack (float32 on CPU) → move to model device (MPS / CUDA / CPU)
+        stacked = torch.stack(outputs)            # (B, n_qubits) float32
+        return stacked.to(device=self._device, dtype=torch.float32)
+
+    def _classical_fallback(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Classical approximation when quantum circuit fails.
+        Applies tanh to keep outputs in [-1, 1] matching qubit expectations.
+
+        Args:
+            x: (B, 2^n_qubits) or (2^n_qubits,)
+
+        Returns:
+            (B, n_qubits) classical approximation
+        """
+        if x.dim() == 1:
+            x = x.unsqueeze(0)
+
+        # Average pool 2^n_qubits → n_qubits
+        # e.g. 8 features → 3 qubit outputs (for n_qubits=3)
+        B       = x.shape[0]
+        out_dim = self.n_qubits
+
+        # Reshape and mean-pool if q_dim > n_qubits
+        if self._q_dim >= out_dim:
+            chunk = self._q_dim // out_dim
+            # Trim to multiple of out_dim
+            x_trim = x[:, : out_dim * chunk]
+            out    = x_trim.reshape(B, out_dim, chunk).mean(dim=-1)
+        else:
+            # Pad if q_dim < n_qubits (unusual)
+            pad = out_dim - self._q_dim
+            out = torch.cat([x, torch.zeros(B, pad, device=x.device)], dim=1)
+
+        return torch.tanh(out)   # keep in [-1, 1]
+
+    # ------------------------------------------------------------------
+    # Backbone helpers (identical to EfficientNetModel)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _select_device() -> torch.device:
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+            logger.info("[QuantumModel] Using CUDA")
+        elif (hasattr(torch.backends, "mps") and
+              torch.backends.mps.is_available()):
+            device = torch.device("mps")
+            logger.info("[QuantumModel] Using Apple MPS")
+        else:
+            device = torch.device("cpu")
+            logger.info("[QuantumModel] Using CPU")
+        return device
+
+    @staticmethod
+    def _build_backbone(pretrained: bool) -> Tuple[nn.Module, int]:
+        feature_dim = 1792
+        try:
+            from efficientnet_pytorch import EfficientNet
+            if pretrained:
+                net = EfficientNet.from_pretrained("efficientnet-b4")
+                logger.info("Quantum model: loaded efficientnet_pytorch backbone (pretrained)")
+            else:
+                net = EfficientNet.from_name("efficientnet-b4")
+                logger.info("Quantum model: loaded efficientnet_pytorch backbone (random init)")
+            net._fc = nn.Identity()
+            return nn.Sequential(net), feature_dim
+
+        except ImportError:
+            pass
+
+        import torchvision.models as M
+        weights  = M.EfficientNet_B4_Weights.IMAGENET1K_V1 if pretrained else None
+        net      = M.efficientnet_b4(weights=weights)
+        backbone = nn.Sequential(
+            net.features,
+            net.avgpool,
+            nn.Flatten(start_dim=1),
+        )
+        logger.info("Quantum model: loaded torchvision EfficientNet-B4 backbone")
+        return backbone, feature_dim
+
+    def _apply_finetuning(self, mode: str) -> None:
+        if mode == "ftall":
+            for p in self.backbone.parameters():
+                p.requires_grad = True
+        elif mode == "frozen":
+            for p in self.backbone.parameters():
+                p.requires_grad = False
+        elif mode in ("ft1", "ft2"):
+            for p in self.backbone.parameters():
+                p.requires_grad = False
+            n = 1 if mode == "ft1" else 2
+            for child in list(self.backbone.children())[-n:]:
+                for p in child.parameters():
+                    p.requires_grad = True
+        else:
+            for p in self.backbone.parameters():
+                p.requires_grad = True
+
+        logger.info(f"Quantum model finetuning: {mode}")

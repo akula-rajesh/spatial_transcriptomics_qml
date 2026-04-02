@@ -1,0 +1,79 @@
+# QNN Gene Predictor — Model Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+# Full quantum neural network for spatial gene expression prediction.
+# Designed to be a fair quantum counterpart to classical_efficientnet.
+#
+# Architecture:
+#   Image (B,3,224,224)  ← patches at window=299, resized to 224×224
+#     ① EfficientNet-B4        → (B, 1792)       classical feature extraction
+#     ② FeatureReducer MLP     → (B, n_qubits)   compress + Tanh×π for angles
+#     ③ QNNLayer (PennyLane)   → (B, n_qubits)   quantum transformation
+#                                                 data re-uploading + StronglyEntangling
+#                                                 parameter-shift gradients (MPS/CUDA/CPU)
+#     ④ ClassicalDecoder MLP   → (B, decode_dim) expand + GELU (breaks rank cap)
+#     ⑤ main_head Linear       → (B, 250)        gene expression predictions
+#        aux_head  Linear       → (B, aux_nums)  optional auxiliary predictions
+#
+# Speed note:
+#   parameter-shift needs 2×n_params circuit evals per backward pass.
+#   n_qubits=8, n_layers=3 → 2×8×3×3 = 144 evals per batch.
+#   Recommend: batch_size=8, frozen backbone (finetuning: frozen) for first runs.
+#   Then unfreeze backbone (finetuning: ftall) once QNN converges.
+#
+# To use: set in pipeline_config.yaml:
+#   models:
+#     active_model: "qnn_gene_predictor"
+# ─────────────────────────────────────────────────────────────────────────────
+
+model:
+  name: "qnn_gene_predictor"
+  type: "quantum"
+
+  # ── Gene prediction ──────────────────────────────────────────────────
+  gene_filter: 250          # Top-N genes to predict (main head output)
+  aux_ratio:   0.0          # Start with 0 — QML is slow, keep it simple
+                            # Set to 1.0 once base model trains well
+  aux_weight:  0.0          # Loss weight for auxiliary task
+
+  # ── Backbone ─────────────────────────────────────────────────────────
+  pretrained: true          # Load ImageNet weights for EfficientNet-B4
+  finetuning: "frozen"      # frozen: only QNN + heads train (faster, safer to start)
+                            # ftall:  full fine-tuning (use after QNN converges)
+                            # ft1:    unfreeze last block only
+                            # ft2:    unfreeze last 2 blocks
+
+  # ── QNN circuit ──────────────────────────────────────────────────────
+  n_qubits: 8               # Number of qubits
+                            #   8 = sweet spot: enough expressibility, reasonable speed
+                            #   Increase to 12-16 if you have time/compute
+                            #   Circuit Hilbert space = 2^n_qubits dimensions
+  n_layers: 3               # Data re-uploading depth
+                            #   3 = good balance of expressibility vs speed
+                            #   Quantum weight params = n_layers × n_qubits × 3
+                            #   For n_qubits=8, n_layers=3 → 8×3×3 = 72 params
+  q_device: "default.qubit" # PennyLane simulator device
+                            #   default.qubit      — exact simulation (CPU)
+                            #   lightning.qubit    — faster CPU (pip install pennylane-lightning)
+                            #   default.mixed      — noisy simulation
+
+  # ── Feature reducer (1792 → n_qubits) ────────────────────────────────
+  reduce_dim: 256           # Intermediate MLP dimension: 1792→256→n_qubits
+  reducer_dropout: 0.2      # Dropout in feature reducer
+
+  # ── Classical decoder (n_qubits → decode_dim) ─────────────────────────
+  decode_dim: 512           # Output of decoder — input to gene head linear layers
+                            # Must be ≥ gene_filter (250) for unconstrained mapping
+  decoder_dropout: 0.2      # Dropout in decoder
+
+  total_genes: null         # Set automatically at runtime from dataset
+
+# ── Image input (informational) ──────────────────────────────────────────
+input:
+  patch_window_size: 299    # Raw patch size (matches preprocessing.window_size)
+  model_input_size: 224     # Resized to 224×224 in SpatialDataset before transform
+  channels: 3               # RGB
+
+# ── Backbone feature dimension (informational) ────────────────────────────
+backbone:
+  name: "efficientnet-b4"
+  feature_dim: 1792
